@@ -1106,6 +1106,14 @@ def iter_years(tmin, tmax):
         t = tend
 
 
+def today():
+    return day_start(time.time())
+
+
+def tomorrow():
+    return day_start(time.time() + 24*60*60)
+
+
 def decitab(n):
     '''
     Get integer decimation sequence for given downampling factor.

@@ -21,6 +21,7 @@ Reference
    plot
    pz
    scenario
+   squirrel
    streaming
    trace
    util

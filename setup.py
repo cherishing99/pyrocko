@@ -534,6 +534,10 @@ subpacknames = [
     'pyrocko.scenario.targets',
     'pyrocko.scenario.sources',
     'pyrocko.obspy_compat',
+    'pyrocko.squirrel',
+    'pyrocko.squirrel.io',
+    'pyrocko.squirrel.io.backends',
+    'pyrocko.squirrel.client',
 ]
 
 cmdclass = {

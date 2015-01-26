@@ -3,6 +3,8 @@
 # The Pyrocko Developers, 21st Century
 # ---|P------/S----------~Lg----------
 
+import os
+
 
 class FileError(Exception):
     def __init__(self, *args, **kwargs):
@@ -30,3 +32,11 @@ class FileLoadError(FileError):
 
 class FileSaveError(FileError):
     '''Raised when a problem occurred while saving of a file.'''
+
+
+def get_stats(filename):
+    try:
+        s = os.stat(filename)
+        return float(s.st_mtime), s.st_size
+    except OSError as e:
+        raise FileLoadError(e)

@@ -308,20 +308,17 @@ class Event(Location):
     @staticmethod
     def load_catalog(filename):
 
-        file = open(filename, 'r')
+        with open(filename, 'r') as file:
+            try:
+                while True:
+                    try:
+                        ev = Event(loadf=file)
+                        yield ev
+                    except EmptyEvent:
+                        pass
 
-        try:
-            while True:
-                try:
-                    ev = Event(loadf=file)
-                    yield ev
-                except EmptyEvent:
-                    pass
-
-        except EOF:
-            pass
-
-        file.close()
+            except EOF:
+                pass
 
     def get_hash(self):
         e = self
