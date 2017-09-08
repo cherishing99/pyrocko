@@ -6,8 +6,10 @@ import math
 import re
 import sys
 import datetime
+import time
 from contextlib import contextmanager
 
+import numpy as num
 
 from pyrocko.guts import StringPattern, Object, Bool, Int, Float, String, \
     SObject, Unicode, Complex, Timestamp, DateTimestamp, StringChoice, Defer, \
@@ -22,6 +24,8 @@ try:
     unicode
 except NameError:
     unicode = str
+
+from pyrocko.util import get_time_class, to_time_float
 
 
 guts_prefix = 'guts_test'
@@ -41,7 +45,8 @@ basic_types = (
 
 
 def tstamp(*args):
-    return float(calendar.timegm(args))
+    time_float = get_time_class()
+    return time_float(calendar.timegm(args))
 
 
 samples = {}
@@ -80,13 +85,13 @@ regularize[Timestamp] = [
     ('2010-01-01T10:20:01.11Z',  tstamp(2010, 1, 1, 10, 20, 1)+0.11),
     ('2030-12-12 00:00:10.11111',  tstamp(2030, 12, 12, 0, 0, 10)+0.11111),
     (datetime.date(2010, 12, 12),  tstamp(2010, 12, 12, 0, 0, 0)),
-    (10,  10.)
+    (10,  to_time_float(10.))
 ]
 regularize[DateTimestamp] = [
     ('2010-01-01',  tstamp(2010, 1, 1, 0, 0, 0)),
     (datetime.datetime(2010, 12, 12),  tstamp(2010, 12, 12, 0, 0, 0)),
     (datetime.date(2010, 12, 12),  tstamp(2010, 12, 12, 0, 0, 0)),
-    (86400, 86400.)
+    (86400, to_time_float(86400.))
 ]
 
 regularize[Complex] = [
@@ -1263,6 +1268,24 @@ l_flow: ['a', 'b', 'c']
 
         except ImportError:
             pass
+
+    def testTimestamp(self):
+
+        class X(Object):
+            t = Timestamp.T()
+
+        time_float = get_time_class()
+        now = num.floor(time_float(time.time()))
+
+        x = X(t=now)
+        x2 = load_string(x.dump())
+
+        assert isinstance(x2.t, get_time_class())
+
+        x3 = load_string('''--- !guts_test.X
+t: 2018-08-06 12:53:20
+''')
+        assert isinstance(x3.t, time_float)
 
 
 def makeBasicTypeTest(Type, sample, sample_in=None, xml=False):
