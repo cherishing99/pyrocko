@@ -805,6 +805,12 @@ def MakePileViewerMainClass(base):
 
             self.menu.addSeparator()
 
+            mi = qw.QAction('Jump to time', self.menu)
+            self.menu.addAction(mi)
+            mi.triggered.connect(self.jump_to_time)
+
+            self.menu.addSeparator()
+
             menudef = [
                 ('Individual Scale',
                     lambda tr: tr.nslc_id),
@@ -2265,6 +2271,85 @@ def MakePileViewerMainClass(base):
 
             self.update()
             self.update_status()
+
+        def jump_to_time(self):
+
+            class DateDialog(qw.QDialog):
+                def __init__(self, parent=None):
+                    super(DateDialog, self).__init__(parent)
+                    self.setWindowTitle('Jump to time')
+                    dt = datetime.datetime
+
+                    layout = qw.QFormLayout(self)
+                    content_tmin, content_tmax = parent.content_time_range()
+                    tmin, tmax = parent.get_time_range()
+
+                    self.starttime = qw.QDateTimeEdit(self)
+                    self.starttime.setCalendarPopup(True)
+                    self.starttime.setDateTimeRange(
+                        dt.fromtimestamp(content_tmin),
+                        dt.fromtimestamp(content_tmax))
+                    self.starttime.setDateTime(dt.fromtimestamp(tmin))
+                    self.starttime.setDisplayFormat('yyyy-MM-dd hh:mm:ss')
+                    layout.addRow('Start time', self.starttime)
+
+                    self.endtime = qw.QDateTimeEdit(self)
+                    self.endtime.setCalendarPopup(True)
+                    self.endtime.setDateTimeRange(
+                        dt.fromtimestamp(content_tmin),
+                        dt.fromtimestamp(content_tmax))
+                    self.endtime.setDateTime(dt.fromtimestamp(tmax))
+                    self.endtime.setDisplayFormat('yyyy-MM-dd hh:mm:ss')
+                    layout.addRow('End time', self.endtime)
+
+                    def align_time(date):
+                        starttime, endtime = self.get_time_range()
+
+                        if starttime > endtime:
+                            self.blockSignals(True)
+                            self.endtime.setDateTime(date)
+                            self.starttime.setDateTime(date)
+                            self.blockSignals(False)
+
+                    self.endtime.dateTimeChanged.connect(align_time)
+                    self.starttime.dateTimeChanged.connect(align_time)
+
+                    buttons = qw.QDialogButtonBox(
+                        qw.QDialogButtonBox.Ok | qw.QDialogButtonBox.Cancel,
+                        qc.Qt.Horizontal, self)
+                    buttons.accepted.connect(self.accept)
+                    buttons.rejected.connect(self.reject)
+                    layout.addWidget(buttons)
+
+                def get_time_range(self):
+                    return self.get_starttime(), self.get_endtime()
+
+                def get_starttime(self):
+                    return self.starttime.dateTime().toPyDateTime()
+
+                def get_endtime(self):
+                    return self.endtime.dateTime().toPyDateTime()
+
+                @staticmethod
+                def getDateTime(parent=None):
+                    dialog = DateDialog(parent)
+                    result = dialog.exec_()
+                    starttime, endtime = dialog.get_time_range()
+
+                    return (starttime, endtime, result == qw.QDialog.Accepted)
+
+            starttime, endtime, res = DateDialog.getDateTime(self)
+            starttime = starttime.timestamp()
+            endtime = endtime.timestamp()
+            content_tmin, content_tmax = self.content_time_range()
+            if not res:
+                return
+
+            if starttime > endtime \
+                    or starttime < content_tmin or endtime > content_tmax:
+                return
+
+            self.set_time_range(starttime, endtime)
 
         def handle_fkeys(self, key):
             self.set_phase_kind(
