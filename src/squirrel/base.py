@@ -3,6 +3,7 @@ from __future__ import absolute_import, print_function
 import sys
 import os
 import re
+import math
 import threading
 import sqlite3
 import logging
@@ -14,7 +15,7 @@ from pyrocko import config, util
 
 from . import model, io
 
-from .model import to_kind_ids, to_kind_id, to_kind, separator
+from .model import to_kind_ids, to_kind_id, to_kind, separator, WaveformOrder
 from .client import fdsn, catalog
 from . import client
 
@@ -30,6 +31,8 @@ class NotAvailable(Exception):
 
 def wrap(lines, width=80, indent=''):
     lines = list(lines)
+    if not lines:
+        return ''
     fwidth = max(len(s) for s in lines)
     nx = max(1, (80-len(indent)) // (fwidth+1))
     i = 0
@@ -76,7 +79,8 @@ def codes_fill(n, codes):
 kind_to_ncodes = {
     'station': 4,
     'channel': 5,
-    'waveform': 6}
+    'waveform': 6,
+    'waveform_promise': 6}
 
 
 def codes_patterns_for_kind(kind, codes):
@@ -113,6 +117,39 @@ def pyrocko_station_from_channel_group(group, extra_args):
         elevation=args[5],
         depth=args[6],
         channels=[ch.get_pyrocko_channel() for ch in group])
+
+
+def blocks(tmin, tmax, deltat, nsamples_block=100000):
+    tblock = deltat * nsamples_block
+    iblock_min = int(math.floor(tmin / tblock))
+    iblock_max = int(math.ceil(tmax / tblock))
+    for iblock in range(iblock_min, iblock_max):
+        yield iblock * tblock, (iblock+1) * tblock
+
+
+def gaps(avail, tmin, tmax):
+    assert tmin < tmax
+
+    data = [(tmax, 1), (tmin, -1)]
+    for (tmin_a, tmax_a) in avail:
+        assert tmin_a < tmax_a
+        data.append((tmin, 1))
+        data.append((tmax, -1))
+
+    data.sort()
+    s = 1
+    gaps = []
+    tmin_g = None
+    for t, x in data:
+        if s == 1 and x == -1:
+            tmin_g = t
+        elif s == 0 and x == 1 and tmin_g is not None:
+            tmax_g = t
+            gaps.append((tmin_g, tmax_g))
+
+        s += x
+
+    return gaps
 
 
 class Selection(object):
@@ -191,7 +228,7 @@ class Selection(object):
         self._conn.execute(
             'DROP TABLE %(db)s.%(file_states)s' % self._names)
 
-    def add(self, file_paths, state=0):
+    def add(self, file_paths):
         '''
         Add files to the selection.
 
@@ -201,6 +238,8 @@ class Selection(object):
 
         if isinstance(file_paths, str):
             file_paths = [file_paths]
+
+        file_paths = util.short_to_list(100, file_paths)
 
         try:
             if len(file_paths) < 100:
@@ -215,11 +254,21 @@ class Selection(object):
                 self._conn.executemany(
                     '''
                         INSERT OR IGNORE INTO %(db)s.%(file_states)s
-                        SELECT files.file_id, ?
+                        SELECT files.file_id, 0
                         FROM files
                         WHERE files.path = ?
                     ''' % self._names, (
-                        (state, filepath) for filepath in file_paths))
+                        (filepath,) for filepath in file_paths))
+
+                self._conn.executemany(
+                    '''
+                        UPDATE %(db)s.%(file_states)s
+                        SET file_state = 1
+                        WHERE (
+                            SELECT files.file_id
+                            FROM files
+                            WHERE files.path == ? ) == file_id AND file_state != 0
+                    ''' % self._names, ((x,) for x in file_paths))
 
                 return
 
@@ -246,11 +295,22 @@ class Selection(object):
         self._conn.execute(
             '''
                 INSERT OR IGNORE INTO %(db)s.%(file_states)s
-                SELECT files.file_id, ?
+                SELECT files.file_id, 0
                 FROM temp.%(bulkinsert)s
                 INNER JOIN files
                 ON temp.%(bulkinsert)s.path == files.path
-            ''' % self._names, (state,))
+            ''' % self._names)
+
+        self._conn.execute(
+            '''
+                UPDATE %(db)s.%(file_states)s
+                SET file_state = 1
+                WHERE (
+                    SELECT files.file_id
+                    FROM temp.%(bulkinsert)s
+                    INNER JOIN files
+                    ON temp.%(bulkinsert)s.path == files.path) == file_id AND file_state != 0
+            ''' % self._names)
 
         self._conn.execute(
             'DROP TABLE temp.%(bulkinsert)s' % self._names)
@@ -274,12 +334,24 @@ class Selection(object):
                      WHERE files.path == ?)
             ''' % self._names, ((path,) for path in file_paths))
 
+    def set_file_states(self, state):
+        '''
+        Set file states 
+        
+        :param state: ``0``: new, ``1``: force check, ``2``: known
+        '''
+        self._conn.execute(
+            '''
+                UPDATE %(db)s.%(file_states)s
+                SET file_state = ?
+            ''' % self._names, (state,))
+
     def undig_grouped(self, skip_unchanged=False):
         '''
         Get content inventory of all files in selection.
 
         :param: skip_unchanged: if ``True`` only inventory of modified files
-            is yielded (:py:class:`flag_unchanged` must be called beforehand).
+            is yielded (:py:class:`flag_modified` must be called beforehand).
 
         This generator yields tuples ``(path, nuts)`` where ``path`` is the
         path to the file and ``nuts`` is a list of
@@ -348,12 +420,19 @@ class Selection(object):
         for values in self._conn.execute(sql):
             yield values[0]
 
-    def flag_unchanged(self, check=True):
+    def flag_modified(self, check=True):
         '''
-        Mark files which have not been modified.
+        Mark files which have been modified.
 
         :param check: if ``True`` query modification times of known files on
             disk. If ``False``, only flag unknown files.
+
+        Assumes file state is 0 for newly added files, 1 for files added again
+        to the selection (forces check), or 2 for all others (no checking is
+        done for those).
+
+        Sets file state to 0 for unknown or modified files, 2 for known and not
+        modified files.
         '''
 
         sql = '''
@@ -365,9 +444,21 @@ class Selection(object):
                 WHERE files.file_id == %(db)s.%(file_states)s.file_id) IS NULL
         ''' % self._names
 
-        self._conn.execute(sql)
+        print('zz', check)
 
         if not check:
+
+            sql = '''
+                UPDATE %(db)s.%(file_states)s
+                SET file_state = 2
+                WHERE file_state == 1
+            ''' % self._names
+
+            self._conn.execute(sql)
+
+            for x in self._conn.execute('SELECT file_state from %(db)s.%(file_states)s LIMIT 5' % self._names):
+                print('^^^', x)
+
             return
 
         def iter_file_states():
@@ -381,7 +472,7 @@ class Selection(object):
                 FROM %(db)s.%(file_states)s
                 INNER JOIN files
                     ON %(db)s.%(file_states)s.file_id == files.file_id
-                WHERE %(db)s.%(file_states)s.file_state != 0
+                WHERE %(db)s.%(file_states)s.file_state == 1
                 ORDER BY %(db)s.%(file_states)s.file_id
             ''' % self._names
 
@@ -391,6 +482,7 @@ class Selection(object):
                 try:
                     mod = io.get_backend(fmt)
                     file_stats = mod.get_stats(path)
+                    
                 except FileLoadError:
                     yield 0, file_id
                     continue
@@ -399,7 +491,8 @@ class Selection(object):
 
                 if (mtime_db, size_db) != file_stats:
                     yield 0, file_id
-                    continue
+                else:
+                    yield 2, file_id
 
         # could better use callback function here...
 
@@ -408,6 +501,9 @@ class Selection(object):
             SET file_state = ?
             WHERE file_id = ?
         ''' % self._names
+
+        for x in self._conn.execute('SELECT file_state from %(db)s.%(file_states)s LIMIT 5' % self._names):
+            print('vvv', x)
 
         self._conn.executemany(sql, iter_file_states())
 
@@ -448,21 +544,26 @@ class SquirrelStats(Object):
         kind_counts = dict(
             (kind, sum(self.counts[kind].values())) for kind in self.kinds)
 
+        codes = ['.'.join(x) for x in self.codes]
+
+        scodes = '\n' + wrap(codes, indent='  ') if codes else '<none>'
+        stmin = util.tts(self.tmin) if self.tmin is not None else '<none>'
+        stmax = util.tts(self.tmax) if self.tmax is not None else '<none>'
+
         s = '''
-available codes:
-%s
+available codes:               %s
 number of files:               %i
 total size of known files:     %s
 number of index nuts:          %i
 available nut kinds:           %s
 time span of indexed contents: %s - %s''' % (
-            wrap(('.'.join(x) for x in self.codes), indent='  '),
+            scodes,
             self.nfiles,
             util.human_bytesize(self.total_size),
             self.nnuts,
             ', '.join('%s: %i' % (
                 kind, kind_counts[kind]) for kind in sorted(self.kinds)),
-            util.time_to_str(self.tmin), util.time_to_str(self.tmax))
+            stmin, stmax)
 
         return s
 
@@ -623,8 +724,8 @@ class Squirrel(Selection):
             table_names = [
                 'selection_file_states',
                 'selection_nuts',
-                'selection_kind_codes_count']
-            # 'files', 'nuts', 'kind_codes', 'kind_codes_count']
+                'selection_kind_codes_count',
+                'files', 'nuts', 'kind_codes', 'kind_codes_count']
 
         m = {
             'selection_file_states': '%(db)s.%(file_states)s',
@@ -736,11 +837,7 @@ class Squirrel(Selection):
                 WHERE %(db)s.%(file_states)s.file_state != 2
             ''' + w_kinds) % self._names, args)
 
-        c.execute(
-            '''
-                UPDATE %(db)s.%(file_states)s
-                SET file_state = 2
-            ''' % self._names)
+        self.set_file_states(2)
 
     def add_source(self, source):
         '''
@@ -781,6 +878,9 @@ class Squirrel(Selection):
 
         if tmax is None:
             tmax = tmax_avail
+
+        if isinstance(codes, str):
+            codes = tuple(codes.split('.'))
 
         return tmin, tmax, codes
 
@@ -1069,7 +1169,9 @@ class Squirrel(Selection):
         ''' % self._names
 
         for row in self._conn.execute(sql):
-            return row[0]
+            return row[0] or 0
+
+        return 0
 
     def get_stats(self):
         '''
@@ -1121,7 +1223,7 @@ class Squirrel(Selection):
         for codes, group in d.items():
             if len(group) > 1:
                 logger.warn(
-                    'Multiple entries maching codes %s'
+                    'Multiple entries matching codes %s'
                     % '.'.join(codes.split(separator)))
 
     def get_stations(self, *args, **kwargs):
@@ -1151,33 +1253,44 @@ class Squirrel(Selection):
         promises = list(self.get_nuts('waveform_promise', *args))
 
         tmin, tmax, _ = args
-        codes_to_waveforms = dict(
-            (nut.codes, nut) for nut in waveforms)
+        codes_to_avail = defaultdict(list)
+        for nut in waveforms:
+            codes_to_avail[nut.codes].append((nut.tmin, nut.tmax+nut.deltat))
 
         orders = []
         for promise in promises:
-            waveforms_have = codes_to_waveforms[promise.codes]
+            waveforms_avail = codes_to_avail[promise.codes]
             for block_tmin, block_tmax in blocks(tmin, tmax, promise.deltat):
-                orders.append(
-                    Order(
-                        promise.file_path,
-                        promise.codes,
-                        (block_tmin, block_tmax),
-                        gaps(waveforms_have, block_tmin, block_tmax)))
+                print('order', util.tts(block_tmin), util.tts(block_tmax),
+                      promise.file_path, promise.codes)
 
-                    # after successful download delete block span from promise
-                    # if gaps is empty (noop query), still delete it
-                    # deletion means split promise
+                orders.append(
+                    WaveformOrder(
+                        source_id=promise.file_path,
+                        codes=tuple(promise.codes.split(separator)),
+                        tmin=block_tmin,
+                        tmax=block_tmax,
+                        gaps=gaps(waveforms_avail, block_tmin, block_tmax)))
+
+                # after successful download delete block span from promise
+                # if gaps is empty (noop query), still delete it
+                # deletion means split promise
 
         # setup order matrix
         #   cols (code, tmin, tmax)
-        #   rows (client)
+        #   rows (source)
+
+        source_ids = []
+        sources = {}
+        for source in self._sources:
+            source_ids.append(source.source_id)
+            sources[source.source_id] = source
 
         def order_key(order):
-            return (order.codes, order.block_tmin, order.block_tmax)
+            return (order.codes, order.tmin, order.tmax)
 
-        client_priority = dict(
-            (client, i) for (i, client) in enumerate(clients))
+        source_priority = dict(
+            (source_id, i) for (i, source_id) in enumerate(source_ids))
 
         order_groups = defaultdict(list)
         for order in orders:
@@ -1185,16 +1298,27 @@ class Squirrel(Selection):
 
         for k, order_group in order_groups.items():
             order_group.sort(
-                key=lambda order: client_priority[order.client])
+                key=lambda order: source_priority[order.source_id])
 
         while order_groups:
-
             orders_now = []
+            empty = []
             for k, order_group in order_groups.items():
                 try:
                     orders_now.append(order_group.pop(0))
-                except XXX:
-                    pass
+                except IndexError:
+                    empty.append(k)
+
+            for k in empty:
+                del order_groups[k]
+
+            by_source_id = defaultdict(list)
+            for order in orders_now:
+                by_source_id[order.source_id].append(order)
+
+            for source_id in by_source_id:
+                sources[source_id].download_waveforms(
+                    self, by_source_id[source_id])
 
     def get_waveforms(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
@@ -1248,7 +1372,7 @@ class Squirrel(Selection):
                 lat=sargs[3],
                 lon=sargs[4],
                 elevation=sargs[5],
-                depth=sargs[6],
+                depth=sargs[6] or 0.0,
                 channels=pchannels))
 
         return pstations
@@ -1554,10 +1678,10 @@ class Database(object):
 
         del selection
 
-    def new_selection(self, file_paths=None, state=0):
+    def new_selection(self, file_paths=None):
         selection = Selection(self)
         if file_paths:
-            selection.add(file_paths, state=state)
+            selection.add(file_paths)
         return selection
 
     def commit(self):
@@ -1707,7 +1831,9 @@ class Database(object):
         '''
 
         for row in self._conn.execute(sql):
-            return row[0]
+            return row[0] or 0
+
+        return 0
 
     def get_stats(self):
         return DatabaseStats(

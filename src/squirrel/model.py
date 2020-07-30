@@ -4,7 +4,8 @@ import hashlib
 import numpy as num
 
 from pyrocko import util
-from pyrocko.guts import Object, String, Timestamp, Float, Int, Unicode
+from pyrocko.guts import Object, String, Timestamp, Float, Int, Unicode, \
+    Tuple, List
 from pyrocko.guts_array import Array
 
 separator = '\t'
@@ -241,6 +242,18 @@ class WaveformPromise(Content):
     @property
     def time_span(self):
         return (self.tmin, self.tmax)
+
+
+class WaveformOrder(Object):
+    source_id = String.T()
+    codes = Tuple.T(None, String.T())
+    tmin = Timestamp.T()
+    tmax = Timestamp.T()
+    gaps = List.T(Tuple.T(2, Timestamp.T()))
+
+    @property
+    def client(self):
+        return self.promise_file_path.split(':')[1]
 
 
 class Station(Content):

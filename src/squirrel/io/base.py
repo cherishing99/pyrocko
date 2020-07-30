@@ -72,7 +72,7 @@ def detect_format(path):
     :param str path: path of file
     '''
 
-    if path.startswith('virtual:'):
+    if path.startswith('virtual:') or path.startswith('client:'):
         return 'virtual'
 
     try:
@@ -155,23 +155,23 @@ def iload(
 
             database = selection.get_database()
 
+        if skip_unchanged and not isinstance(paths, Selection):
+            raise TypeError(
+                'iload: need selection when called with "skip_unchanged=True"')
+
     temp_selection = None
     if database:
         if not selection:
-            temp_selection = database.new_selection(paths, state=1)
+            temp_selection = database.new_selection(paths)
             selection = temp_selection
 
         if skip_unchanged:
-            selection.flag_unchanged(check)
+            selection.flag_modified(check)
             it = selection.undig_grouped(skip_unchanged=True)
         else:
             it = selection.undig_grouped()
 
     else:
-        if skip_unchanged:
-            raise TypeError(
-                'iload: skip_unchanged argument requires database')
-
         it = ((path, []) for path in paths)
 
     n_files = 0

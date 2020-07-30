@@ -52,14 +52,14 @@ class CatalogSource(Source):
     def __init__(
             self, name,
             query_args=None,
-            no_query_age_max=None,
-            force_query_age_max=None,
+            expires=None,
+            anxious=None,
             cache_dir=None):
 
         Source.__init__(self)
 
-        self._no_query_age_max = no_query_age_max
-        self._force_query_age_max = force_query_age_max
+        self._no_query_age_max = expires
+        self._force_query_age_max = anxious
         self._query_args = query_args
         self._cache_dir = cache_dir
         self._name = name
@@ -223,8 +223,6 @@ class CatalogSource(Source):
         yield self._pack(events, tpack_min, tmax, tmodified)
 
     def _pack(self, events, tmin, tmax, tmodified):
-        print('packing: %i' % len(events))
-
         if events:
             content_id = ehash(
                 self._hash + ' %r %r %r' % (tmin, tmax, tmodified))

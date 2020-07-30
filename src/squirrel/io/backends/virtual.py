@@ -17,6 +17,7 @@ class UniqueKeyRequired(Exception):
 
 
 def get_stats(file_path):
+    print('ZZZ', data_mtimes)
     try:
         return float(data_mtimes[file_path]), 0
     except KeyError:

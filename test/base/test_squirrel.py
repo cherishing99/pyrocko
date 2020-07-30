@@ -63,7 +63,6 @@ class SquirrelTestCase(unittest.TestCase):
             for nut in squirrel.iload(fpath, content=[]):
                 ii += 1
 
-        print(ii)
         assert ii == 5811
 
         ii = 0
@@ -271,9 +270,12 @@ class SquirrelTestCase(unittest.TestCase):
         assert list(sq.iter_kinds()) == []
 
         assert len(list(sq.get_nuts('waveform', tmin=-10., tmax=10.))) == 0
+        print(sq)  # ist leer wie erwartet
 
         fns = make_files(2)
+        print('Achtung')
         sq.add(fns)
+        print(sq)   # ist immer noch leer, file state ist 1 nach check
         assert sq.get_nfiles() == 1
         assert sq.get_nnuts() == 1
         sq.remove(fns)
@@ -446,30 +448,36 @@ class SquirrelTestCase(unittest.TestCase):
 
             assert ii == len(fns)
 
-        with bench.run('iload, rescan, skip unchanged'):
+        sel = database.new_selection(fns)
+
+        with bench.run('iload, skip unchanged, files are new'):
             ii = 0
-            for nut in squirrel.iload(fns, content=[], database=database,
+            for nut in squirrel.iload(sel, content=[],
                                       skip_unchanged=True, check=True):
                 ii += 1
 
-            assert ii == 0
+            print('xx', ii)
+            assert ii == len(fns) 
 
-        with bench.run('iload, rescan, skip known'):
+        sel.set_file_states(2)  # mark files as known
+
+        with bench.run('iload, skip unchanged, files are known and unchanged'):
             ii = 0
-            for nut in squirrel.iload(fns, content=[], database=database,
-                                      skip_unchanged=True, check=False):
+            for nut in squirrel.iload(sel, content=[],
+                                      skip_unchanged=True, check=True):
                 ii += 1
 
+            print('xx', ii)
             assert ii == 0
 
-        sel = database.new_selection(fns, state=1)
-
-        with bench.run('iload, rescan, skip known, preselected'):
+        with bench.run('iload, skip unchanged (no check), '
+                       'files are known and unchanged'):
             ii = 0
             for nut in squirrel.iload(sel, content=[],
                                       skip_unchanged=True, check=False):
                 ii += 1
 
+            print('yy', ii)
             assert ii == 0
 
         del sel
@@ -496,6 +504,7 @@ class SquirrelTestCase(unittest.TestCase):
 
         with bench.run('stats'):
             s = sq.get_stats()
+            print(s)
             assert s.nfiles == len(fns)
             assert s.nnuts == len(fns)
             assert s.kinds == ['waveform']
@@ -510,15 +519,15 @@ class SquirrelTestCase(unittest.TestCase):
         tmax = util.str_to_time('2018-01-02 00:00:00')
         database = squirrel.Database()
         sq = squirrel.Squirrel(database=database)
-        sq.add_fdsn('geofon')
+        sq.add_fdsn('geofon', dict(network='GE'))
         sq.update(tmin=tmin, tmax=tmax)
+        sq.update_waveform_inventory()
 
     def test_events(self):
         fpath = common.test_data_file('events.txt')
         database = squirrel.Database()
         sq = squirrel.Squirrel(database=database)
         sq.add(fpath)
-        print(sq)
 
     def test_catalog_source(self):
         tmin = util.str_to_time('2017-01-01 00:00:00')

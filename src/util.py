@@ -2229,6 +2229,22 @@ def consistency_merge(list_of_tuples,
         return tuple([merge(x) for x in list(zip(*list_of_tuples))[1:]])
 
 
+def short_to_list(nmax, it):
+    import itertools
+
+    if isinstance(it, list):
+        return it
+
+    l = []
+    for i in range(nmax+1):
+        try:
+            l.append(next(it))
+        except StopIteration:
+            return l
+
+    return itertools.chain(l, it)
+
+
 def parse_md(f):
     try:
         with open(op.join(
