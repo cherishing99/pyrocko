@@ -204,6 +204,13 @@ class Selection(object):
                     file_state integer)
             ''' % self._names))
 
+        self._conn.execute(
+            '''
+                CREATE INDEX
+                IF NOT EXISTS %(db)s.%(file_states)s_index_file_state
+                ON %(file_states)s (file_state)
+            ''' % self._names)
+
     def __del__(self):
         if not self._persistent:
             self._delete()
@@ -227,6 +234,8 @@ class Selection(object):
         '''
         self._conn.execute(
             'DROP TABLE %(db)s.%(file_states)s' % self._names)
+
+        self._conn.commit()
 
     def add(self, file_paths):
         '''
@@ -266,8 +275,9 @@ class Selection(object):
                         SET file_state = 1
                         WHERE (
                             SELECT files.file_id
-                            FROM files
-                            WHERE files.path == ? ) == file_id AND file_state != 0
+                                FROM files
+                                WHERE files.path == ? ) == file_id
+                            AND file_state != 0
                     ''' % self._names, ((x,) for x in file_paths))
 
                 return
@@ -307,9 +317,10 @@ class Selection(object):
                 SET file_state = 1
                 WHERE (
                     SELECT files.file_id
-                    FROM temp.%(bulkinsert)s
-                    INNER JOIN files
-                    ON temp.%(bulkinsert)s.path == files.path) == file_id AND file_state != 0
+                        FROM temp.%(bulkinsert)s
+                        INNER JOIN files
+                        ON temp.%(bulkinsert)s.path == files.path) == file_id
+                    AND file_state != 0
             ''' % self._names)
 
         self._conn.execute(
@@ -334,17 +345,16 @@ class Selection(object):
                      WHERE files.path == ?)
             ''' % self._names, ((path,) for path in file_paths))
 
-    def set_file_states(self, state):
+    def set_file_states_known(self):
         '''
-        Set file states 
-        
-        :param state: ``0``: new, ``1``: force check, ``2``: known
+        Set file states to "known" (2).
         '''
         self._conn.execute(
             '''
                 UPDATE %(db)s.%(file_states)s
-                SET file_state = ?
-            ''' % self._names, (state,))
+                SET file_state = 2
+                WHERE file_state < 2
+            ''' % self._names)
 
     def undig_grouped(self, skip_unchanged=False):
         '''
@@ -442,9 +452,10 @@ class Selection(object):
                 SELECT mtime
                 FROM files
                 WHERE files.file_id == %(db)s.%(file_states)s.file_id) IS NULL
+                AND file_state == 1
         ''' % self._names
 
-        print('zz', check)
+        self._conn.execute(sql)
 
         if not check:
 
@@ -455,9 +466,6 @@ class Selection(object):
             ''' % self._names
 
             self._conn.execute(sql)
-
-            for x in self._conn.execute('SELECT file_state from %(db)s.%(file_states)s LIMIT 5' % self._names):
-                print('^^^', x)
 
             return
 
@@ -482,7 +490,7 @@ class Selection(object):
                 try:
                     mod = io.get_backend(fmt)
                     file_stats = mod.get_stats(path)
-                    
+
                 except FileLoadError:
                     yield 0, file_id
                     continue
@@ -501,9 +509,6 @@ class Selection(object):
             SET file_state = ?
             WHERE file_id = ?
         ''' % self._names
-
-        for x in self._conn.execute('SELECT file_state from %(db)s.%(file_states)s LIMIT 5' % self._names):
-            print('vvv', x)
 
         self._conn.executemany(sql, iter_file_states())
 
@@ -705,13 +710,21 @@ class Squirrel(Selection):
     def _delete(self):
         '''Delete database tables associated with this squirrel.'''
 
-        self._conn.execute(
-            'DROP TABLE %(db)s.%(nuts)s' % self._names)
+        for s in '''
+                DROP TRIGGER %(db)s.%(nuts)s_delete_nuts;
+                DROP TRIGGER %(db)s.%(nuts)s_delete_nuts2;
+                DROP TRIGGER %(db)s.%(file_states)s_delete_files;
+                DROP TRIGGER %(db)s.%(nuts)s_inc_kind_codes;
+                DROP TRIGGER %(db)s.%(nuts)s_dec_kind_codes;
+                DROP TABLE %(db)s.%(nuts)s;
+                DROP TABLE %(db)s.%(kind_codes_count)s;
+                '''.strip().splitlines():
 
-        self._conn.execute(
-            'DROP TABLE %(db)s.%(kind_codes_count)s' % self._names)
+            self._conn.execute(s % self._names)
 
         Selection._delete(self)
+
+        self._conn.commit()
 
     def print_tables(self, table_names=None, stream=None):
         if stream is None:
@@ -780,6 +793,9 @@ class Squirrel(Selection):
         Add content which is not backed by files.
 
         Stores to the main database and the selection.
+
+        If ``virtual_file_paths`` are given, this prevents creating a temp list
+        of the nuts while aggregating the file paths for the selection.
         '''
 
         if isinstance(virtual_file_paths, str):
@@ -797,15 +813,6 @@ class Squirrel(Selection):
         Selection.add(self, virtual_file_paths)
         self.get_database().dig(nuts_add)
         self._update_nuts()
-
-    def add_volatile(self, nuts):
-        '''
-        Add run-time content to the selection.
-
-        Stuff is not stored to the main database.
-        '''
-
-        pass
 
     def _load(self, format, check):
         for _ in io.iload(
@@ -837,7 +844,7 @@ class Squirrel(Selection):
                 WHERE %(db)s.%(file_states)s.file_state != 2
             ''' + w_kinds) % self._names, args)
 
-        self.set_file_states(2)
+        self.set_file_states_known()
 
     def add_source(self, source):
         '''
@@ -1403,13 +1410,18 @@ class Database(object):
     Shared meta-information database used by squirrel.
     '''
 
-    def __init__(self, database_path=':memory:'):
+    def __init__(self, database_path=':memory:', log_statements=False):
         self._database_path = database_path
         self._conn = sqlite3.connect(database_path)
         self._conn.text_factory = str
         self._tables = {}
         self._initialize_db()
         self._need_commit = False
+        if log_statements:
+            self._conn.set_trace_callback(self._log_statement)
+
+    def _log_statement(self, statement):
+        logger.debug(statement)
 
     def get_connection(self):
         return self._conn

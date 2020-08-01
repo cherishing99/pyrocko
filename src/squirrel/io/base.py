@@ -72,7 +72,7 @@ def detect_format(path):
     :param str path: path of file
     '''
 
-    if path.startswith('virtual:') or path.startswith('client:'):
+    if path.startswith('virtual:'):
         return 'virtual'
 
     try:

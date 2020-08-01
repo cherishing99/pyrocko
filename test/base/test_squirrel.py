@@ -270,12 +270,9 @@ class SquirrelTestCase(unittest.TestCase):
         assert list(sq.iter_kinds()) == []
 
         assert len(list(sq.get_nuts('waveform', tmin=-10., tmax=10.))) == 0
-        print(sq)  # ist leer wie erwartet
 
         fns = make_files(2)
-        print('Achtung')
         sq.add(fns)
-        print(sq)   # ist immer noch leer, file state ist 1 nach check
         assert sq.get_nfiles() == 1
         assert sq.get_nnuts() == 1
         sq.remove(fns)
@@ -456,10 +453,9 @@ class SquirrelTestCase(unittest.TestCase):
                                       skip_unchanged=True, check=True):
                 ii += 1
 
-            print('xx', ii)
             assert ii == len(fns) 
 
-        sel.set_file_states(2)  # mark files as known
+        sel.set_file_states_known()
 
         with bench.run('iload, skip unchanged, files are known and unchanged'):
             ii = 0
@@ -467,7 +463,6 @@ class SquirrelTestCase(unittest.TestCase):
                                       skip_unchanged=True, check=True):
                 ii += 1
 
-            print('xx', ii)
             assert ii == 0
 
         with bench.run('iload, skip unchanged (no check), '
@@ -477,7 +472,6 @@ class SquirrelTestCase(unittest.TestCase):
                                       skip_unchanged=True, check=False):
                 ii += 1
 
-            print('yy', ii)
             assert ii == 0
 
         del sel
@@ -504,7 +498,6 @@ class SquirrelTestCase(unittest.TestCase):
 
         with bench.run('stats'):
             s = sq.get_stats()
-            print(s)
             assert s.nfiles == len(fns)
             assert s.nnuts == len(fns)
             assert s.kinds == ['waveform']
@@ -514,6 +507,37 @@ class SquirrelTestCase(unittest.TestCase):
 
         return bench
 
+    def test_sub_squirrel(self):
+
+        try:
+            tempdir = os.path.join(self.tempdir, 'test_sub_squirrel')
+
+            def make_files(vers, name):
+                tr = trace.Trace(
+                    tmin=float(vers),
+                    deltat=1.0,
+                    ydata=num.array([vers, vers], dtype=num.int32))
+
+                return io.save(tr, op.join(tempdir, '%s.mseed' % name))
+
+            database = squirrel.Database()
+            sq = squirrel.Squirrel(database=database)
+
+            fns1 = make_files(0, '1')
+            fns2 = make_files(0, '2')
+            fns3 = make_files(0, '3')
+
+            sq.add(fns1)
+
+            sq2 = squirrel.Squirrel(sq.get_database())
+            sq2.add(fns2)
+            del sq2
+
+            sq.add(fns3)
+
+        finally:
+            shutil.rmtree(tempdir)
+
     def test_fdsn_source(self):
         tmin = util.str_to_time('2018-01-01 00:00:00')
         tmax = util.str_to_time('2018-01-02 00:00:00')
@@ -521,7 +545,7 @@ class SquirrelTestCase(unittest.TestCase):
         sq = squirrel.Squirrel(database=database)
         sq.add_fdsn('geofon', dict(network='GE'))
         sq.update(tmin=tmin, tmax=tmax)
-        sq.update_waveform_inventory()
+        sq.update_waveform_inventory(tmin=tmin, tmax=tmax)
 
     def test_events(self):
         fpath = common.test_data_file('events.txt')

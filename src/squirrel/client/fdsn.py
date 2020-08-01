@@ -75,6 +75,20 @@ class MSeedArchive(Archive):
         return io.save(trs, path)
 
 
+def order_summary(orders):
+    codes = sorted(set(order.codes[1:-1] for order in orders))
+    if len(codes) >= 2:
+        return '%i orders for %s - %s' % (
+            len(orders),
+            '.'.join(codes[0]),
+            '.'.join(codes[-1]))
+
+    else:
+        return '%i orders for %s' % (
+            len(orders),
+            '.'.join(codes[0]))
+
+
 class FDSNSource(Source):
 
     def __init__(
@@ -146,7 +160,7 @@ class FDSNSource(Source):
                 and not self._stale_channel_inventory():
 
             logger.info(
-                'using cached channel information for site %s'
+                'using cached channel information for FDSN site %s'
                 % self._site)
 
         else:
@@ -203,7 +217,7 @@ class FDSNSource(Source):
             extra_args.update(self._query_args)
 
         logger.info(
-            'querying channel information from site %s'
+            'querying channel information from FDSN site %s'
             % self._site)
 
         channel_sx = fdsn.station(
@@ -281,7 +295,8 @@ class FDSNSource(Source):
             with tempfile.NamedTemporaryFile() as f:
                 try:
                     logger.info(
-                        'Downloading data from site "%s".' % self._site)
+                        'Downloading data from FDSN site "%s": %s.'
+                        % (self._site, order_summary(orders_now)))
 
                     data = fdsn.dataselect(
                         site=self._site, selection=selection_now,
@@ -310,7 +325,6 @@ class FDSNSource(Source):
                                 pass
 
                         paths = self._archive.add(trs_order)
-                        print('xx', paths)
                         squirrel.add(paths)
 
                 except fdsn.EmptyResult:
@@ -318,8 +332,8 @@ class FDSNSource(Source):
 
                 except util.HTTPError:
                     logger.warn(
-                        'An error occurred while downloading data from site '
-                        '"%s" for channels \n  %s' % (
+                        'An error occurred while downloading data from '
+                        'site "%s" for channels \n  %s' % (
                             self._site,
                             '\n  '.join(
                                 '.'.join(x[:4]) for x in selection_now)))
