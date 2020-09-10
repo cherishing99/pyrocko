@@ -250,10 +250,10 @@ class UtilTestCase(unittest.TestCase):
 
     def test_short_to_list(self):
 
-        for n in range(20):        
+        for n in range(20):
             it = util.short_to_list(10, iter(range(n)))
             if n > 10:
-                assert not isinstance(it, list) 
+                assert not isinstance(it, list)
             else:
                 assert isinstance(it, list)
 

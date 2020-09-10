@@ -453,7 +453,7 @@ class SquirrelTestCase(unittest.TestCase):
                                       skip_unchanged=True, check=True):
                 ii += 1
 
-            assert ii == len(fns) 
+            assert ii == len(fns)
 
         sel.set_file_states_known()
 

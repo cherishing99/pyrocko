@@ -2235,14 +2235,14 @@ def short_to_list(nmax, it):
     if isinstance(it, list):
         return it
 
-    l = []
+    li = []
     for i in range(nmax+1):
         try:
-            l.append(next(it))
+            li.append(next(it))
         except StopIteration:
-            return l
+            return li
 
-    return itertools.chain(l, it)
+    return itertools.chain(li, it)
 
 
 def parse_md(f):
