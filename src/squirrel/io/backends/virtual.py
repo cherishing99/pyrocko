@@ -1,5 +1,6 @@
 from __future__ import absolute_import, print_function
 
+import time
 from collections import defaultdict
 from pyrocko.io.io_common import FileLoadError
 
@@ -19,6 +20,13 @@ class UniqueKeyRequired(Exception):
 def get_stats(file_path):
     try:
         return float(data_mtimes[file_path]), 0
+    except KeyError:
+        raise FileLoadError(file_path)
+
+
+def touch(file_path):
+    try:
+        data_mtimes[file_path] = time.time()
     except KeyError:
         raise FileLoadError(file_path)
 

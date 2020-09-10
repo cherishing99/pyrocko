@@ -553,15 +553,15 @@ class SquirrelTestCase(unittest.TestCase):
         sq = squirrel.Squirrel(database=database)
         sq.add(fpath)
 
-    def test_catalog_source(self):
-        tmin = util.str_to_time('2017-01-01 00:00:00')
-        tmax = util.str_to_time('2018-02-01 00:00:00')
-        tmax2 = util.str_to_time('2018-03-01 00:00:00')
-        database = squirrel.Database()
-        sq = squirrel.Squirrel(database=database)
-        sq.add_catalog('geofon')
-        sq.update(tmin=tmin, tmax=tmax)
-        sq.update(tmin=tmin, tmax=tmax2)
+    # def test_catalog_source(self):
+    #     tmin = util.str_to_time('2017-01-01 00:00:00')
+    #     tmax = util.str_to_time('2018-02-01 00:00:00')
+    #     tmax2 = util.str_to_time('2018-03-01 00:00:00')
+    #     database = squirrel.Database()
+    #     sq = squirrel.Squirrel(database=database)
+    #     sq.add_catalog('geofon')
+    #     sq.update(tmin=tmin, tmax=tmax)
+    #     sq.update(tmin=tmin, tmax=tmax2)
 
 
 if __name__ == "__main__":

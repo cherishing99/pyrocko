@@ -2,7 +2,7 @@ from __future__ import absolute_import, print_function
 
 import logging
 
-from pyrocko.io.io_common import get_stats  # noqa
+from pyrocko.io.io_common import get_stats, touch  # noqa
 from pyrocko import model as pmodel
 from ... import model
 

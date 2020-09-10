@@ -29,6 +29,10 @@ class NotAvailable(Exception):
     pass
 
 
+def execute_get1(connection, sql, args):
+    return list(connection.execute(sql, args))[0]
+
+
 def wrap(lines, width=80, indent=''):
     lines = list(lines)
     if not lines:
@@ -236,6 +240,41 @@ class Selection(object):
             'DROP TABLE %(db)s.%(file_states)s' % self._names)
 
         self._conn.commit()
+
+    def silent_touch(self, file_path):
+        '''
+        Update modification time of file without initiating reindexing.
+
+        Useful to prolong validity period of data with expiration date.
+        '''
+
+        # sql = 'BEGIN TRANSACTION'
+        # self._conn.execute(sql)
+        try:
+
+            sql = 'SELECT format, size FROM files WHERE path = ?'
+            fmt, size = execute_get1(self._conn, sql, (file_path,))
+
+            mod = io.get_backend(fmt)
+            mod.touch(file_path)
+            file_stats = mod.get_stats(file_path)
+
+            if file_stats[1] != size:
+                raise FileLoadError(
+                    'Silent update for file "%s" failed: size has changed.'
+                    % file_path)
+
+            sql = '''
+                UPDATE files
+                SET mtime = ?
+                WHERE path = ?
+            '''
+            self._conn.execute(sql, (file_stats[0], file_path))
+            self._conn.commit()
+
+        except FileLoadError:
+            # self._conn.execute('ROLLBACK')
+            raise
 
     def add(self, file_paths):
         '''
@@ -852,6 +891,7 @@ class Squirrel(Selection):
         '''
 
         self._sources.append(source)
+        source.setup(self)
 
     def add_fdsn(self, *args, **kwargs):
         '''
@@ -1264,13 +1304,12 @@ class Squirrel(Selection):
         for nut in waveforms:
             codes_to_avail[nut.codes].append((nut.tmin, nut.tmax+nut.deltat))
 
+        print(codes_to_avail)
+
         orders = []
         for promise in promises:
             waveforms_avail = codes_to_avail[promise.codes]
             for block_tmin, block_tmax in blocks(tmin, tmax, promise.deltat):
-                print('order', util.tts(block_tmin), util.tts(block_tmax),
-                      promise.file_path, promise.codes)
-
                 orders.append(
                     WaveformOrder(
                         source_id=promise.file_path,
@@ -1410,7 +1449,7 @@ class Database(object):
     Shared meta-information database used by squirrel.
     '''
 
-    def __init__(self, database_path=':memory:', log_statements=False):
+    def __init__(self, database_path=':memory:', log_statements=True):
         self._database_path = database_path
         self._conn = sqlite3.connect(database_path)
         self._conn.text_factory = str

@@ -1,7 +1,7 @@
 from __future__ import absolute_import, print_function
 
 import time
-from pyrocko.io.io_common import get_stats  # noqa
+from pyrocko.io.io_common import get_stats, touch  # noqa
 from ... import model
 
 

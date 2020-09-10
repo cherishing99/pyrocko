@@ -31,7 +31,7 @@ sites_not_supporting = {
 
 def diff(fn_a, fn_b):
     try:
-        if os.stat(fn_a)[8] != os.stat(fn_b)[8]:
+        if os.stat(fn_a).st_size != os.stat(fn_b).st_size:
             return True
 
     except OSError:
@@ -78,15 +78,33 @@ class MSeedArchive(Archive):
 def order_summary(orders):
     codes = sorted(set(order.codes[1:-1] for order in orders))
     if len(codes) >= 2:
-        return '%i orders for %s - %s' % (
+        return '%i orders, %s - %s' % (
             len(orders),
             '.'.join(codes[0]),
             '.'.join(codes[-1]))
 
     else:
-        return '%i orders for %s' % (
+        return '%i orders, %s' % (
             len(orders),
             '.'.join(codes[0]))
+
+
+def combine_selections(selection):
+    out = []
+    last = None
+    for this in selection:
+        if last and this[:4] == last[:4] and this[4] == last[5]:
+            last = last[:5] + (this[5],)
+        else:
+            if last:
+                out.append(last)
+
+            last = this
+
+    if last:
+        out.append(last)
+
+    return out
 
 
 class FDSNSource(Source):
@@ -95,7 +113,7 @@ class FDSNSource(Source):
             self, site,
             query_args=None,
             expires=None,
-            cache_dir=None,
+            cache_path=None,
             user_credentials=None,
             auth_token=None,
             auth_token_path=None):
@@ -125,6 +143,7 @@ class FDSNSource(Source):
         if user_credentials is not None:
             s += user_credentials[0]
             s += user_credentials[1]
+
         if query_args is not None:
             s += ','.join(
                 '%s:%s' % (k, query_args[k])
@@ -137,31 +156,58 @@ class FDSNSource(Source):
         self._hash = ehash(s)
         self.source_id = 'client:fdsn:%s' % self._hash
 
-        self._cache_dir = op.join(
-            cache_dir or config.config().cache_dir,
+        self._cache_path = op.join(
+            cache_path or config.config().cache_dir,
             'fdsn',
             self._hash)
 
-        util.ensuredir(self._cache_dir)
+        util.ensuredir(self._cache_path)
         self._load_constraint()
         self._archive = MSeedArchive()
-        self._archive.set_base_path(op.join(
-            self._cache_dir,
-            'waveforms'))
+        self._archive.set_base_path(self._get_waveforms_path())
 
-    def get_channel_file_paths(self):
-        return [op.join(self._cache_dir, 'channels.stationxml')]
+    def setup(self, squirrel):
+        squirrel.add(self._get_waveforms_path())
+
+    def _get_channels_path(self):
+        return op.join(self._cache_path, 'channels.stationxml')
+
+    def _get_waveforms_path(self):
+        return op.join(self._cache_path, 'waveforms')
+
+    def _log_meta(self, message, target=logger.info):
+        log_prefix = 'FDSN "%s" metadata:' % self._site
+        target(' '.join((log_prefix, message)))
+
+    def _log_info_data(self, *args):
+        log_prefix = 'FDSN "%s" waveforms:' % self._site
+        logger.info(' '.join((log_prefix,) + args))
+
+    def _str_due(self):
+        return util.time_to_str()
+
+    def _str_expires(self, now):
+        t = self._get_expiration_time()
+        if t is None:
+            return 'expires: never'
+        else:
+            expire = 'expires' if t > now else 'expired'
+            return '%s: %s' % (
+                expire,
+                util.time_to_str(t, format='%Y-%m-%d %H:%M:%S'))
 
     def update_channel_inventory(self, squirrel, constraint=None):
         if constraint is None:
             constraint = Constraint()
 
-        if self._constraint and self._constraint.contains(constraint) \
-                and not self._stale_channel_inventory():
+        expiration_time = self._get_expiration_time()
+        now = time.time()
 
-            logger.info(
-                'using cached channel information for FDSN site %s'
-                % self._site)
+        log_target = logger.info
+        if self._constraint and self._constraint.contains(constraint) \
+                and (expiration_time is None or now < expiration_time):
+
+            s_case = 'using cached'
 
         else:
             if self._constraint:
@@ -169,28 +215,42 @@ class FDSNSource(Source):
                 constraint_temp.expand(constraint)
                 constraint = constraint_temp
 
-            channel_sx = self._do_channel_query(constraint)
-            channel_sx.created = None  # timestamp would ruin diff
+            try:
+                channel_sx = self._do_channel_query(constraint)
 
-            fn = self.get_channel_file_paths()[0]
-            fn_temp = fn + '.%i.temp' % os.getpid()
-            channel_sx.dump_xml(filename=fn_temp)
+                channel_sx.created = None  # timestamp would ruin diff
 
-            if op.exists(fn):
-                if diff(fn, fn_temp):
-                    os.rename(fn_temp, fn)
-                    logger.info('changed: %s' % fn)
+                fn = self._get_channels_path()
+                fn_temp = fn + '.%i.temp' % os.getpid()
+                channel_sx.dump_xml(filename=fn_temp)
+
+                if op.exists(fn):
+                    if diff(fn, fn_temp):
+                        os.rename(fn_temp, fn)
+                        s_case = 'updated'
+                    else:
+                        os.unlink(fn_temp)
+                        squirrel.silent_touch(fn)
+                        s_case = 'upstream unchanged'
+
                 else:
-                    os.unlink(fn_temp)
-                    logger.info('no change: %s' % fn)
-            else:
-                os.rename(fn_temp, fn)
-                logger.info('new: %s' % fn)
+                    os.rename(fn_temp, fn)
+                    s_case = 'new'
 
-            self._constraint = constraint
-            self._dump_constraint()
+                self._constraint = constraint
+                self._dump_constraint()
 
-        squirrel.add(self.get_channel_file_paths())
+            except OSError as e:
+                s_case = 'update failed (%s)' % str(e)
+                log_target = logger.error
+
+        self._log_meta(
+            '%s (%s)' % (s_case, self._str_expires(now)),
+            target=log_target)
+
+        fn = self._get_channels_path()
+        if os.path.exists(fn):
+            squirrel.add(fn)
 
     def _do_channel_query(self, constraint):
         extra_args = {}
@@ -216,9 +276,7 @@ class FDSNSource(Source):
         if self._query_args is not None:
             extra_args.update(self._query_args)
 
-        logger.info(
-            'querying channel information from FDSN site %s'
-            % self._site)
+        self._log_meta('querying...')
 
         channel_sx = fdsn.station(
             site=self._site,
@@ -229,7 +287,7 @@ class FDSNSource(Source):
         return channel_sx
 
     def _get_constraint_file_path(self):
-        return op.join(self._cache_dir, 'constraint.pickle')
+        return op.join(self._cache_path, 'constraint.pickle')
 
     def _load_constraint(self):
         fn = self._get_constraint_file_path()
@@ -243,23 +301,28 @@ class FDSNSource(Source):
         with open(self._get_constraint_file_path(), 'wb') as f:
             pickle.dump(self._constraint, f, protocol=2)
 
-    def _stale_channel_inventory(self):
-        if self._no_query_age_max is not None:
-            for file_path in self.get_channel_file_paths():
-                try:
-                    t = os.stat(file_path)[8]
-                    return t < time.time() - self._no_query_age_max
-                except OSError:
-                    return True
+    def _get_expiration_time(self):
+        if self._no_query_age_max is None:
+            return None
 
-        return False
+        try:
+            file_path = self._get_channels_path()
+            t = os.stat(file_path)[8]
+            return t + self._no_query_age_max
+
+        except OSError:
+            return True
+
+        return None
 
     def update_waveform_inventory(self, squirrel, constraint):
         from pyrocko.squirrel import Squirrel
 
         # get meta information of stuff available through this source
         sub_squirrel = Squirrel(database=squirrel.get_database())
-        sub_squirrel.add(self.get_channel_file_paths(), check=False)
+        fn = self._get_channels_path()
+        if os.path.exists(fn):
+            sub_squirrel.add([fn], check=False)
 
         nuts = sub_squirrel.get_nuts(
             'channel', constraint.tmin, constraint.tmax)
@@ -271,7 +334,7 @@ class FDSNSource(Source):
                 **nut.waveform_promise_kwargs) for nut in nuts),
             virtual_file_paths=[file_path])
 
-    def get_user_credentials(self):
+    def _get_user_credentials(self):
         d = {}
         if self._user_credentials is not None:
             d['user'], d['passwd'] = self._user_credentials
@@ -282,6 +345,7 @@ class FDSNSource(Source):
         return d
 
     def download_waveforms(self, squirrel, orders):
+        orders.sort(key=lambda order: (order.codes, order.tmin))
         neach = 20
         i = 0
         while i < len(orders):
@@ -292,15 +356,16 @@ class FDSNSource(Source):
                 selection_now.append(
                     order.codes[1:5] + (order.tmin, order.tmax))
 
+            selection_now = combine_selections(selection_now)
+
             with tempfile.NamedTemporaryFile() as f:
                 try:
-                    logger.info(
-                        'Downloading data from FDSN site "%s": %s.'
-                        % (self._site, order_summary(orders_now)))
+                    self._log_info_data(
+                        'downloading, %s' % order_summary(orders_now))
 
                     data = fdsn.dataselect(
                         site=self._site, selection=selection_now,
-                        **self.get_user_credentials())
+                        **self._get_user_credentials())
 
                     while True:
                         buf = data.read(1024)
@@ -333,7 +398,7 @@ class FDSNSource(Source):
                 except util.HTTPError:
                     logger.warn(
                         'An error occurred while downloading data from '
-                        'site "%s" for channels \n  %s' % (
+                        'FDSN site "%s" for channels \n  %s' % (
                             self._site,
                             '\n  '.join(
                                 '.'.join(x[:4]) for x in selection_now)))
