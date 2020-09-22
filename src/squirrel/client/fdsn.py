@@ -12,13 +12,15 @@ except ImportError:
     import pickle
 import os.path as op
 from .base import Source, Constraint
-from ..model import make_waveform_promise_nut, ehash
+from ..model import make_waveform_promise_nut, ehash, InvalidWaveform, \
+    order_summary, WaveformOrder
 from pyrocko.client import fdsn
 
 from pyrocko import config, util, trace, io
 from pyrocko.io_common import FileLoadError
+from pyrocko.io import stationxml
 
-from pyrocko.guts import Object, String
+from pyrocko.guts import Object, String, Timestamp, List, Tuple, Int
 
 fdsn.g_timeout = 60.
 
@@ -27,6 +29,13 @@ logger = logging.getLogger('pyrocko.squirrel.client.fdsn')
 sites_not_supporting = {
     'startbefore': ['geonet'],
     'includerestricted': ['geonet']}
+
+
+def plural_s(x):
+    if not isinstance(x, int):
+        x = len(x)
+
+    return 's' if x != 1 else ''
 
 
 def diff(fn_a, fn_b):
@@ -72,21 +81,7 @@ class MSeedArchive(Archive):
 
     def add(self, trs):
         path = op.join(self._base_path, self.template)
-        return io.save(trs, path)
-
-
-def order_summary(orders):
-    codes = sorted(set(order.codes[1:-1] for order in orders))
-    if len(codes) >= 2:
-        return '%i orders, %s - %s' % (
-            len(orders),
-            '.'.join(codes[0]),
-            '.'.join(codes[-1]))
-
-    else:
-        return '%i orders, %s' % (
-            len(orders),
-            '.'.join(codes[0]))
+        return io.save(trs, path, overwrite=False)
 
 
 def combine_selections(selection):
@@ -107,6 +102,96 @@ def combine_selections(selection):
     return out
 
 
+def orders_sort_key(order):
+    return (order.codes, order.tmin)
+
+
+def orders_to_selection(orders):
+    selection = []
+    for order in sorted(orders, key=orders_sort_key):
+        selection.append(
+            order.codes[1:5] + (order.tmin, order.tmax))
+
+    return combine_selections(selection)
+
+
+class ErrorEntry(Object):
+    time = Timestamp.T()
+    order = WaveformOrder.T()
+    kind = String.T()
+    details = String.T(optional=True)
+
+
+class ErrorAggregate(Object):
+    site = String.T()
+    kind = String.T()
+    details = String.T()
+    entries = List.T(ErrorEntry.T())
+    codes_list = List.T(Tuple.T(None, String.T()))
+    time_spans = List.T(Tuple.T(2, Timestamp.T()))
+
+    def __str__(self):
+        codes = ['.'.join(x) for x in self.codes_list]
+        scodes = '\n' + util.ewrap(codes, indent='    ') if codes else '<none>'
+        tss = self.time_spans
+        sspans = '\n' + util.ewrap(('%s - %s' % (
+            util.time_to_str(ts[0]), util.time_to_str(ts[1])) for ts in tss),
+            indent='   ')
+
+        return ('FDSN "%s": download error summary for "%s" (%i)\n%s  '
+                'Codes:%s\n  Time spans:%s') % (
+            self.site,
+            self.kind,
+            len(self.entries),
+            '  Details: %s\n' % self.details if self.details else '',
+            scodes,
+            sspans)
+
+
+class ErrorLog(Object):
+    site = String.T()
+    entries = List.T(ErrorEntry.T())
+    checkpoints = List.T(Int.T())
+
+    def append_checkpoint(self):
+        self.checkpoints.append(len(self.entries))
+
+    def append(self, time, order, kind, details=''):
+        entry = ErrorEntry(time=time, order=order, kind=kind, details=details)
+        self.entries.append()
+        return entry
+
+    def iter_aggregates(self):
+        by_kind_details = defaultdict(list)
+        for entry in self.entries:
+            by_kind_details[entry.kind, entry.details].append(entry)
+
+        kind_details = sorted(by_kind_details.keys())
+
+        for kind, details in kind_details:
+            entries = by_kind_details[kind, details]
+            codes_list = sorted(set(entry.order.codes for entry in entries))
+            selection = orders_to_selection(entry.order for entry in entries)
+            time_spans = sorted(set(row[-2:] for row in selection))
+            yield ErrorAggregate(
+                site=self.site,
+                kind=kind,
+                details=details,
+                entries=entries,
+                codes_list=codes_list,
+                time_spans=time_spans)
+
+    def summarize_recent(self):
+        ioff = self.checkpoints[-1] if self.checkpoints else 0
+        recent = self.entries[ioff:]
+        kinds = sorted(set(entry.kind for entry in recent))
+        if recent:
+            return '%i error%s (%s)' % (
+                len(recent), plural_s(recent), '; '.join(kinds))
+        else:
+            return ''
+
+
 class FDSNSource(Source):
 
     def __init__(
@@ -114,6 +199,7 @@ class FDSNSource(Source):
             query_args=None,
             expires=None,
             cache_path=None,
+            shared_waveforms=True,
             user_credentials=None,
             auth_token=None,
             auth_token_path=None):
@@ -153,27 +239,37 @@ class FDSNSource(Source):
         self._user_credentials = user_credentials
         self._query_args = query_args
 
+        self._shared_waveforms = shared_waveforms
+
         self._hash = ehash(s)
         self.source_id = 'client:fdsn:%s' % self._hash
 
         self._cache_path = op.join(
             cache_path or config.config().cache_dir,
-            'fdsn',
-            self._hash)
+            'fdsn')
 
         util.ensuredir(self._cache_path)
         self._load_constraint()
         self._archive = MSeedArchive()
-        self._archive.set_base_path(self._get_waveforms_path())
+        waveforms_path = self._get_waveforms_path()
+        util.ensuredir(waveforms_path)
+        self._archive.set_base_path(waveforms_path)
+        self._error_infos = []
 
     def setup(self, squirrel):
         squirrel.add(self._get_waveforms_path())
 
+    def _get_constraint_file_path(self):
+        return op.join(self._cache_path, self._hash, 'constraint.pickle')
+
     def _get_channels_path(self):
-        return op.join(self._cache_path, 'channels.stationxml')
+        return op.join(self._cache_path, self._hash, 'channels.stationxml')
 
     def _get_waveforms_path(self):
-        return op.join(self._cache_path, 'waveforms')
+        if self._shared_waveforms:
+            return op.join(self._cache_path, 'waveforms')
+        else:
+            return op.join(self._cache_path, self._hash, 'waveforms')
 
     def _log_meta(self, message, target=logger.info):
         log_prefix = 'FDSN "%s" metadata:' % self._site
@@ -221,6 +317,7 @@ class FDSNSource(Source):
                 channel_sx.created = None  # timestamp would ruin diff
 
                 fn = self._get_channels_path()
+                util.ensuredirs(fn)
                 fn_temp = fn + '.%i.temp' % os.getpid()
                 channel_sx.dump_xml(filename=fn_temp)
 
@@ -278,16 +375,16 @@ class FDSNSource(Source):
 
         self._log_meta('querying...')
 
-        channel_sx = fdsn.station(
-            site=self._site,
-            format='text',
-            level='channel',
-            **extra_args)
+        try:
+            channel_sx = fdsn.station(
+                site=self._site,
+                format='text',
+                level='channel',
+                **extra_args)
+            return channel_sx
 
-        return channel_sx
-
-    def _get_constraint_file_path(self):
-        return op.join(self._cache_path, 'constraint.pickle')
+        except fdsn.EmptyResult:
+            return stationxml.FDSNStationXML(source='dummy-emtpy-result')
 
     def _load_constraint(self):
         fn = self._get_constraint_file_path()
@@ -345,27 +442,26 @@ class FDSNSource(Source):
         return d
 
     def download_waveforms(self, squirrel, orders):
-        orders.sort(key=lambda order: (order.codes, order.tmin))
+        elog = ErrorLog(site=self._site)
+        orders.sort(key=orders_sort_key)
         neach = 20
         i = 0
         while i < len(orders):
             orders_now = orders[i:i+neach]
+            selection_now = orders_to_selection(orders_now)
 
-            selection_now = []
-            for order in orders_now:
-                selection_now.append(
-                    order.codes[1:5] + (order.tmin, order.tmax))
-
-            selection_now = combine_selections(selection_now)
+            nsuccess = 0
+            elog.append_checkpoint()
+            self._log_info_data(
+                'downloading, %s' % order_summary(orders_now))
 
             with tempfile.NamedTemporaryFile() as f:
                 try:
-                    self._log_info_data(
-                        'downloading, %s' % order_summary(orders_now))
-
                     data = fdsn.dataselect(
                         site=self._site, selection=selection_now,
                         **self._get_user_credentials())
+
+                    now = time.time()
 
                     while True:
                         buf = data.read(1024)
@@ -376,31 +472,62 @@ class FDSNSource(Source):
                     f.flush()
 
                     trs = io.load(f.name)
+
                     by_nslc = defaultdict(list)
                     for tr in trs:
                         by_nslc[tr.nslc_id].append(tr)
 
                     for order in orders_now:
                         trs_order = []
+                        err_this = None
                         for tr in by_nslc[order.codes[1:5]]:
                             try:
+                                order.validate(tr)
                                 trs_order.append(tr.chop(
                                     order.tmin, order.tmax, inplace=False))
-                            except trace.NoData:
-                                pass
 
-                        paths = self._archive.add(trs_order)
-                        squirrel.add(paths)
+                            except trace.NoData:
+                                err_this = (
+                                    'empty result', 'empty sub-interval')
+
+                            except InvalidWaveform as e:
+                                err_this = ('invalid waveform', str(e))
+
+                        if len(trs_order) == 0:
+                            if err_this is None:
+                                err_this = ('empty result', '')
+
+                            elog.append(now, order, *err_this)
+                        else:
+                            if len(trs_order) != 1:
+                                if err_this:
+                                    elog.append(
+                                        now, order,
+                                        'partial result, %s' % err_this[0],
+                                        err_this[1])
+                                else:
+                                    elog.append(now, order, 'partial result')
+
+                            paths = self._archive.add(trs_order)
+                            squirrel.add(paths)
+                            nsuccess += 1
 
                 except fdsn.EmptyResult:
-                    pass
+                    now = time.time()
+                    for order in orders_now:
+                        elog.append(now, order, 'empty result')
 
-                except util.HTTPError:
-                    logger.warn(
-                        'An error occurred while downloading data from '
-                        'FDSN site "%s" for channels \n  %s' % (
-                            self._site,
-                            '\n  '.join(
-                                '.'.join(x[:4]) for x in selection_now)))
+                except util.HTTPError as e:
+                    now = time.time()
+                    for order in orders_now:
+                        elog.append(now, order, 'http error', str(e))
+
+            emessage = elog.summarize_recent()
+            self._log_info_data(
+                '%i download%s successful' % (nsuccess, plural_s(nsuccess))
+                + (', %s' % emessage if emessage else ''))
 
             i += neach
+
+        for agg in elog.iter_aggregates():
+            logger.warn(str(agg))

@@ -428,6 +428,21 @@ def wrap(text, line_length=80):
     return outlines
 
 
+def ewrap(lines, width=80, indent=''):
+    lines = list(lines)
+    if not lines:
+        return ''
+    fwidth = max(len(s) for s in lines)
+    nx = max(1, (80-len(indent)) // (fwidth+1))
+    i = 0
+    rows = []
+    while i < len(lines):
+        rows.append(indent + ' '.join(x.ljust(fwidth) for x in lines[i:i+nx]))
+        i += nx
+
+    return '\n'.join(rows)
+
+
 class BetterHelpFormatter(optparse.IndentedHelpFormatter):
 
     def __init__(self, *args, **kwargs):

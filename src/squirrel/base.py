@@ -29,23 +29,16 @@ class NotAvailable(Exception):
     pass
 
 
+def lpick(condition, seq):
+    ft = [], []
+    for ele in seq:
+        ft[int(bool(condition(ele)))].append(ele)
+
+    return ft
+
+
 def execute_get1(connection, sql, args):
     return list(connection.execute(sql, args))[0]
-
-
-def wrap(lines, width=80, indent=''):
-    lines = list(lines)
-    if not lines:
-        return ''
-    fwidth = max(len(s) for s in lines)
-    nx = max(1, (80-len(indent)) // (fwidth+1))
-    i = 0
-    rows = []
-    while i < len(lines):
-        rows.append(indent + ' '.join(x.ljust(fwidth) for x in lines[i:i+nx]))
-        i += nx
-
-    return '\n'.join(rows)
 
 
 def get_database(database=None):
@@ -149,11 +142,16 @@ def gaps(avail, tmin, tmax):
             tmin_g = t
         elif s == 0 and x == 1 and tmin_g is not None:
             tmax_g = t
-            gaps.append((tmin_g, tmax_g))
+            if tmin_g != tmax_g:
+                gaps.append((tmin_g, tmax_g))
 
         s += x
 
     return gaps
+
+
+def order_key(order):
+    return (order.codes, order.tmin, order.tmax)
 
 
 class Selection(object):
@@ -590,7 +588,7 @@ class SquirrelStats(Object):
 
         codes = ['.'.join(x) for x in self.codes]
 
-        scodes = '\n' + wrap(codes, indent='  ') if codes else '<none>'
+        scodes = '\n' + util.ewrap(codes, indent='  ') if codes else '<none>'
         stmin = util.tts(self.tmin) if self.tmin is not None else '<none>'
         stmax = util.tts(self.tmax) if self.tmax is not None else '<none>'
 
@@ -1258,7 +1256,7 @@ class Squirrel(Selection):
 
         if nut.key not in self._contents:
             raise NotAvailable(
-                'Unable to retrieve content: %s, %s, %s' % nut.key)
+                'Unable to retrieve content: %s, %s, %s, %s' % nut.key)
 
         return self._contents[nut.key]
 
@@ -1289,7 +1287,7 @@ class Squirrel(Selection):
 
     def get_events(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
-        nuts = sorted(
+         nuts = sorted(
             self.get_nuts('event', *args), key=lambda nut: nut.dkey)
         self.check_duplicates(nuts)
         return [self.get_content(nut) for nut in nuts]
@@ -1304,7 +1302,13 @@ class Squirrel(Selection):
         for nut in waveforms:
             codes_to_avail[nut.codes].append((nut.tmin, nut.tmax+nut.deltat))
 
-        print(codes_to_avail)
+        def tts(x):
+            if isinstance(x, tuple):
+                return tuple(tts(e) for e in x)
+            elif isinstance(x, list):
+                return list(tts(e) for e in x)
+            else:
+                return util.time_to_str(x)
 
         orders = []
         for promise in promises:
@@ -1316,6 +1320,7 @@ class Squirrel(Selection):
                         codes=tuple(promise.codes.split(separator)),
                         tmin=block_tmin,
                         tmax=block_tmax,
+                        deltat=promise.deltat,
                         gaps=gaps(waveforms_avail, block_tmin, block_tmax)))
 
                 # after successful download delete block span from promise
@@ -1326,14 +1331,17 @@ class Squirrel(Selection):
         #   cols (code, tmin, tmax)
         #   rows (source)
 
+        orders_noop, orders = lpick(lambda order: order.gaps, orders)
+        order_keys_noop = set(order_key(order) for order in orders_noop)
+        logger.info(
+            'Waveform orders already satisified with cached/local data: %i '
+            '(%i)' % (len(order_keys_noop), len(orders_noop)))
+
         source_ids = []
         sources = {}
         for source in self._sources:
             source_ids.append(source.source_id)
             sources[source.source_id] = source
-
-        def order_key(order):
-            return (order.codes, order.tmin, order.tmax)
 
         source_priority = dict(
             (source_id, i) for (i, source_id) in enumerate(source_ids))
@@ -1345,6 +1353,10 @@ class Squirrel(Selection):
         for k, order_group in order_groups.items():
             order_group.sort(
                 key=lambda order: source_priority[order.source_id])
+
+        logger.info(
+            'Waveform orders standing for download: %i (%i)'
+            % (len(order_groups), len(orders)))
 
         while order_groups:
             orders_now = []
@@ -1362,15 +1374,22 @@ class Squirrel(Selection):
             for order in orders_now:
                 by_source_id[order.source_id].append(order)
 
+            def release_order_group(order):
+                del order_groups[order_key(order)]
+
+            # TODO: parallelize this loop
             for source_id in by_source_id:
                 sources[source_id].download_waveforms(
-                    self, by_source_id[source_id])
+                    self, by_source_id[source_id],
+                    success=release_group)
+
+        # split promises
 
     def get_waveforms(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
         self._redeem_promises(*args)
         nuts = list(self.get_nuts('waveform', *args))
-        self.check_duplicates(nuts)
+        #self.check_duplicates(nuts)
         return sorted(self.get_content(nut) for nut in nuts)
 
     def get_pyrocko_stations(self, *args, **kwargs):

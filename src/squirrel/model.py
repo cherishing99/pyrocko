@@ -244,16 +244,54 @@ class WaveformPromise(Content):
         return (self.tmin, self.tmax)
 
 
+class InvalidWaveform(Exception):
+    pass
+
+
 class WaveformOrder(Object):
     source_id = String.T()
     codes = Tuple.T(None, String.T())
+    deltat = Float.T()
     tmin = Timestamp.T()
     tmax = Timestamp.T()
     gaps = List.T(Tuple.T(2, Timestamp.T()))
 
     @property
     def client(self):
-        return self.promise_file_path.split(':')[1]
+        return self.source_id.split(':')[1]
+
+    def describe(self, site='?'):
+        return '%s:%s %s [%s - %s]' % (
+            self.client, site, '.'.join(self.codes),
+            util.time_to_str(self.tmin), util.time_to_str(self.tmax))
+
+    def validate(self, tr):
+        if tr.ydata.size == 0:
+            raise InvalidWaveform(
+                'waveform with zero data samples')
+
+        if tr.deltat != self.deltat:
+            raise InvalidWaveform(
+                'incorrect sampling interval - waveform: %g s, '
+                'meta-data: %g s' % (
+                    tr.deltat, self.deltat))
+
+        if not num.all(num.isfinite(tr.ydata)):
+            raise InvalidWaveform('waveform has NaN values')
+
+
+def order_summary(orders):
+    codes = sorted(set(order.codes[1:-1] for order in orders))
+    if len(codes) >= 2:
+        return '%i orders, %s - %s' % (
+            len(orders),
+            '.'.join(codes[0]),
+            '.'.join(codes[-1]))
+
+    else:
+        return '%i orders, %s' % (
+            len(orders),
+            '.'.join(codes[0]))
 
 
 class Station(Content):
