@@ -158,8 +158,7 @@ class ErrorLog(Object):
 
     def append(self, time, order, kind, details=''):
         entry = ErrorEntry(time=time, order=order, kind=kind, details=details)
-        self.entries.append()
-        return entry
+        self.entries.append(entry)
 
     def iter_aggregates(self):
         by_kind_details = defaultdict(list)
@@ -441,7 +440,9 @@ class FDSNSource(Source):
 
         return d
 
-    def download_waveforms(self, squirrel, orders):
+    def download_waveforms(
+            self, squirrel, orders, success, error_permanent, error_temporary):
+
         elog = ErrorLog(site=self._site)
         orders.sort(key=orders_sort_key)
         neach = 20
@@ -498,6 +499,7 @@ class FDSNSource(Source):
                                 err_this = ('empty result', '')
 
                             elog.append(now, order, *err_this)
+                            error_permanent(order)
                         else:
                             if len(trs_order) != 1:
                                 if err_this:
@@ -511,16 +513,20 @@ class FDSNSource(Source):
                             paths = self._archive.add(trs_order)
                             squirrel.add(paths)
                             nsuccess += 1
+                            success(order)
 
                 except fdsn.EmptyResult:
                     now = time.time()
                     for order in orders_now:
                         elog.append(now, order, 'empty result')
+                        error_permanent(order)
 
                 except util.HTTPError as e:
                     now = time.time()
                     for order in orders_now:
                         elog.append(now, order, 'http error', str(e))
+                        error_temporary(order)
+
 
             emessage = elog.summarize_recent()
             self._log_info_data(

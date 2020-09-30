@@ -872,7 +872,13 @@ class Squirrel(Selection):
         c.execute((
             '''
                 INSERT INTO %(db)s.%(nuts)s
-                SELECT nuts.* FROM %(db)s.%(file_states)s
+                SELECT NULL,
+                    nuts.file_id, nuts.file_segment, nuts.file_element,
+                    nuts.kind_id, nuts.kind_codes_id,
+                    nuts.tmin_seconds, nuts.tmin_offset,
+                    nuts.tmax_seconds, nuts.tmax_offset,
+                    nuts.deltat, nuts.kscale
+                FROM %(db)s.%(file_states)s
                 INNER JOIN nuts
                     ON %(db)s.%(file_states)s.file_id == nuts.file_id
                 INNER JOIN kind_codes
@@ -930,7 +936,7 @@ class Squirrel(Selection):
         return tmin, tmax, codes
 
     def get_nuts(
-            self, kind, tmin=None, tmax=None, codes=None):
+            self, kind, tmin, tmax, codes=None):
         '''
         Iterate content intersecting with the half open interval [tmin, tmax[.
 
@@ -1051,6 +1057,113 @@ class Squirrel(Selection):
             nut = model.Nut(values_nocheck=row)
             if nut.tmin < tmax and tmin < nut.tmax:
                 yield nut
+
+    def split_nuts(
+            self, kind, tmin=None, tmax=None, codes=None, file_path=None):
+
+        tmin_seconds, tmin_offset = model.tsplit(tmin)
+        tmax_seconds, tmax_offset = model.tsplit(tmax)
+
+        tscale_edges = model.tscale_edges
+
+        tmin_cond = []
+        args = []
+        for kscale in range(tscale_edges.size + 1):
+            if kscale != tscale_edges.size:
+                tscale = int(tscale_edges[kscale])
+                tmin_cond.append('''
+                    (%(db)s.%(nuts)s.kind_id = ?
+                        AND %(db)s.%(nuts)s.kscale == ?
+                        AND %(db)s.%(nuts)s.tmin_seconds BETWEEN ? AND ?)
+                ''')
+                args.extend(
+                    (to_kind_id(kind), kscale,
+                     tmin_seconds - tscale - 1, tmax_seconds + 1))
+
+            else:
+                tmin_cond.append('''
+                    (%(db)s.%(nuts)s.kind_id == ?
+                        AND %(db)s.%(nuts)s.kscale == ?
+                        AND %(db)s.%(nuts)s.tmin_seconds <= ?)
+                ''')
+
+                args.extend(
+                    (to_kind_id(kind), kscale, tmax_seconds + 1))
+
+        extra_cond = ['%(db)s.%(nuts)s.tmax_seconds >= ?']
+        args.append(tmin_seconds)
+        if codes is not None:
+            pats = codes_patterns_for_kind(kind, codes)
+            extra_cond.append(
+                ' ( %s ) ' % ' OR '.join(
+                    ('kind_codes.codes GLOB ?',) * len(pats)))
+            args.extend(separator.join(pat) for pat in pats)
+
+        if file_path is not None:
+            extra_cond.append('files.path == ?')
+            args.append(file_path)
+
+        sql = ('''
+            SELECT
+                %(db)s.%(nuts)s.nut_id,
+                %(db)s.%(nuts)s.tmin_seconds,
+                %(db)s.%(nuts)s.tmin_offset,
+                %(db)s.%(nuts)s.tmax_seconds,
+                %(db)s.%(nuts)s.tmax_offset,
+                %(db)s.%(nuts)s.deltat
+            FROM files
+            INNER JOIN %(db)s.%(nuts)s
+                ON files.file_id == %(db)s.%(nuts)s.file_id
+            INNER JOIN kind_codes
+                ON %(db)s.%(nuts)s.kind_codes_id == kind_codes.kind_codes_id
+            WHERE ( ''' + ' OR '.join(tmin_cond) + ''' )
+                AND ''' + ' AND '.join(extra_cond)) % self._names
+
+        insert = []
+        delete = []
+        for row in self._conn.execute(sql, args):
+            nut_id, nut_tmin_seconds, nut_tmin_offset, \
+                nut_tmax_seconds, nut_tmax_offset, nut_deltat = row
+
+            nut_tmin = model.tjoin(
+                nut_tmin_seconds, nut_tmin_offset, nut_deltat)
+            nut_tmax = model.tjoin(
+                nut_tmax_seconds, nut_tmax_offset, nut_deltat)
+
+            if nut_tmin < tmax and tmin < nut_tmax:
+                if nut_tmin < tmin:
+                    insert.append((
+                        nut_tmin_seconds, nut_tmin_offset,
+                        tmin_seconds, tmin_offset,
+                        model.tscale_to_kscale(
+                            tmin_seconds - nut_tmin_seconds),
+                        nut_id))
+
+                if tmax < nut_tmax:
+                    insert.append((
+                        tmax_seconds, tmax_offset,
+                        nut_tmax_seconds, nut_tmax_offset,
+                        model.tscale_to_kscale(
+                            nut_tmax_seconds - tmax_seconds),
+                        nut_id))
+
+                delete.append((nut_id,))
+
+        sql_add = '''
+            INSERT INTO %(db)s.%(nuts)s (
+                    file_id, file_segment, file_element, kind_id,
+                    kind_codes_id, deltat, tmin_seconds, tmin_offset,
+                    tmax_seconds, tmax_offset, kscale )
+                SELECT
+                    file_id, file_segment, file_element,
+                    kind_id, kind_codes_id, deltat, ?, ?, ?, ?, ?
+                FROM %(db)s.%(nuts)s
+                WHERE nut_id == ?
+        '''
+        self._conn.executemany(sql_add % self._names, insert)
+
+        sql_delete = '''DELETE FROM %(db)s.%(nuts)s WHERE nut_id == ?'''
+        self._conn.executemany(sql_delete % self._names, delete)
 
     def get_time_span(self):
         '''
@@ -1287,7 +1400,7 @@ class Squirrel(Selection):
 
     def get_events(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
-         nuts = sorted(
+        nuts = sorted(
             self.get_nuts('event', *args), key=lambda nut: nut.dkey)
         self.check_duplicates(nuts)
         return [self.get_content(nut) for nut in nuts]
@@ -1358,6 +1471,36 @@ class Squirrel(Selection):
             'Waveform orders standing for download: %i (%i)'
             % (len(order_groups), len(orders)))
 
+        def release_order_group(order):
+            del order_groups[order_key(order)]
+
+        def split_promise(order):
+            promises = list(
+                self.get_nuts(
+                    'waveform_promise', order.tmin-100000, order.tmax+100000))
+
+            print('XXX')
+            print(order)
+            print('YYY')
+            for promise in promises:
+                print(promise)
+
+            self.split_nuts(
+                'waveform_promise',
+                order.tmin, order.tmax,
+                codes=order.codes,
+                file_path=order.source_id)
+
+        def noop(order):
+            pass
+
+        def success(order):
+            release_order_group(order)
+            split_promise(order)
+
+        for order in orders_noop:
+            split_promise(order)
+
         while order_groups:
             orders_now = []
             empty = []
@@ -1374,14 +1517,13 @@ class Squirrel(Selection):
             for order in orders_now:
                 by_source_id[order.source_id].append(order)
 
-            def release_order_group(order):
-                del order_groups[order_key(order)]
-
             # TODO: parallelize this loop
             for source_id in by_source_id:
                 sources[source_id].download_waveforms(
                     self, by_source_id[source_id],
-                    success=release_group)
+                    success=success,
+                    error_permanent=split_promise,
+                    error_temporary=noop)
 
         # split promises
 
@@ -1389,7 +1531,7 @@ class Squirrel(Selection):
         args = self.get_selection_args(*args, **kwargs)
         self._redeem_promises(*args)
         nuts = list(self.get_nuts('waveform', *args))
-        #self.check_duplicates(nuts)
+        # self.check_duplicates(nuts)
         return sorted(self.get_content(nut) for nut in nuts)
 
     def get_pyrocko_stations(self, *args, **kwargs):
