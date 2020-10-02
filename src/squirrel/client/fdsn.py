@@ -16,11 +16,14 @@ from ..model import make_waveform_promise_nut, ehash, InvalidWaveform, \
     order_summary, WaveformOrder
 from pyrocko.client import fdsn
 
-from pyrocko import config, util, trace, io
+from pyrocko import util, trace, io
 from pyrocko.io_common import FileLoadError
 from pyrocko.io import stationxml
 
-from pyrocko.guts import Object, String, Timestamp, List, Tuple, Int
+from pyrocko.guts import Object, String, Timestamp, List, Tuple, Int, Dict, \
+    Duration, Bool
+
+guts_prefix = 'pf'
 
 fdsn.g_timeout = 60.
 
@@ -193,59 +196,68 @@ class ErrorLog(Object):
 
 class FDSNSource(Source):
 
-    def __init__(
-            self, site,
-            query_args=None,
-            expires=None,
-            cache_path=None,
-            shared_waveforms=True,
-            user_credentials=None,
-            auth_token=None,
-            auth_token_path=None):
+    site = String.T()
+    query_args = Dict.T(String.T(), String.T(), optional=True)
+    expires = Duration.T(optional=True)
+    cache_path = String.T(optional=True)
+    shared_waveforms = Bool.T(default=True)
+    user_credentials = Tuple.T(2, String.T(), optional=True)
+    auth_token = String.T(optional=True)
+    auth_token_path = String.T(optional=True)
 
-        Source.__init__(self)
+    def __init__(self, **kwargs):
+        Source.__init__(self, **kwargs)
 
-        self._site = site
         self._constraint = None
-        self._no_query_age_max = expires
+        self._hash = self.make_hash()
+        self._source_id = 'client:fdsn:%s' % self._hash
+        self._error_infos = []
 
-        assert None in (auth_token, auth_token_path)
+    def make_hash(self):
+        s = self.site
+        s += 'notoken' \
+            if (self.auth_token is None and self.auth_token_path is None) \
+            else 'token'
 
-        if auth_token_path is not None:
+        if self.user_credentials is not None:
+            s += self.user_credentials[0]
+        else:
+            s += 'nocred'
+
+        if self.query_args is not None:
+            s += ','.join(
+                '%s:%s' % (k, self.query_args[k])
+                for k in sorted(self.query_args.keys()))
+        else:
+            s += 'noqueryargs'
+
+        return ehash(s)
+
+    def get_hash(self):
+        return self._hash
+
+    def get_auth_token(self):
+        if self.auth_token:
+            return self.auth_token
+
+        elif self.auth_token_path is not None:
             try:
-                with open(auth_token_path, 'rb') as f:
-                    auth_token = f.read().decode('ascii')
+                with open(self.auth_token_path, 'rb') as f:
+                    return f.read().decode('ascii')
 
             except OSError as e:
                 raise FileLoadError(
                     'Cannot load auth token file (%s): %s'
-                    % (str(e), auth_token_path))
+                    % (str(e), self.auth_token_path))
 
-        s = site
-        if auth_token is not None:
-            s += auth_token
+        else:
+            raise Exception(
+                'FDSNSource: auth_token and auth_token_path are mutually '
+                'exclusive.')
 
-        if user_credentials is not None:
-            s += user_credentials[0]
-            s += user_credentials[1]
-
-        if query_args is not None:
-            s += ','.join(
-                '%s:%s' % (k, query_args[k])
-                for k in sorted(query_args.keys()))
-
-        self._auth_token = auth_token
-        self._user_credentials = user_credentials
-        self._query_args = query_args
-
-        self._shared_waveforms = shared_waveforms
-
-        self._hash = ehash(s)
-        self.source_id = 'client:fdsn:%s' % self._hash
-
+    def setup(self, squirrel):
         self._cache_path = op.join(
-            cache_path or config.config().cache_dir,
-            'fdsn')
+            self.cache_path or squirrel._cache_path, 'fdsn')
 
         util.ensuredir(self._cache_path)
         self._load_constraint()
@@ -253,9 +265,7 @@ class FDSNSource(Source):
         waveforms_path = self._get_waveforms_path()
         util.ensuredir(waveforms_path)
         self._archive.set_base_path(waveforms_path)
-        self._error_infos = []
 
-    def setup(self, squirrel):
         squirrel.add(self._get_waveforms_path())
 
     def _get_constraint_file_path(self):
@@ -265,17 +275,17 @@ class FDSNSource(Source):
         return op.join(self._cache_path, self._hash, 'channels.stationxml')
 
     def _get_waveforms_path(self):
-        if self._shared_waveforms:
+        if self.shared_waveforms:
             return op.join(self._cache_path, 'waveforms')
         else:
             return op.join(self._cache_path, self._hash, 'waveforms')
 
     def _log_meta(self, message, target=logger.info):
-        log_prefix = 'FDSN "%s" metadata:' % self._site
+        log_prefix = 'FDSN "%s" metadata:' % self.site
         target(' '.join((log_prefix, message)))
 
     def _log_info_data(self, *args):
-        log_prefix = 'FDSN "%s" waveforms:' % self._site
+        log_prefix = 'FDSN "%s" waveforms:' % self.site
         logger.info(' '.join((log_prefix,) + args))
 
     def _str_due(self):
@@ -351,7 +361,7 @@ class FDSNSource(Source):
     def _do_channel_query(self, constraint):
         extra_args = {}
 
-        if self._site in sites_not_supporting['startbefore']:
+        if self.site in sites_not_supporting['startbefore']:
             if constraint.tmin is not None:
                 extra_args['starttime'] = constraint.tmin
             if constraint.tmax is not None:
@@ -363,20 +373,20 @@ class FDSNSource(Source):
             if constraint.tmax is not None:
                 extra_args['startbefore'] = constraint.tmax
 
-        if self._site not in sites_not_supporting['includerestricted']:
+        if self.site not in sites_not_supporting['includerestricted']:
             extra_args.update(
                 includerestricted=(
-                    self._user_credentials is not None
-                    or self._auth_token is not None))
+                    self.user_credentials is not None
+                    or self.auth_token is not None))
 
-        if self._query_args is not None:
-            extra_args.update(self._query_args)
+        if self.query_args is not None:
+            extra_args.update(self.query_args)
 
         self._log_meta('querying...')
 
         try:
             channel_sx = fdsn.station(
-                site=self._site,
+                site=self.site,
                 format='text',
                 level='channel',
                 **extra_args)
@@ -398,13 +408,13 @@ class FDSNSource(Source):
             pickle.dump(self._constraint, f, protocol=2)
 
     def _get_expiration_time(self):
-        if self._no_query_age_max is None:
+        if self.expires is None:
             return None
 
         try:
             file_path = self._get_channels_path()
             t = os.stat(file_path)[8]
-            return t + self._no_query_age_max
+            return t + self.expires
 
         except OSError:
             return True
@@ -423,7 +433,7 @@ class FDSNSource(Source):
         nuts = sub_squirrel.get_nuts(
             'channel', constraint.tmin, constraint.tmax)
 
-        file_path = self.source_id
+        file_path = self._source_id
         squirrel.add_virtual(
             (make_waveform_promise_nut(
                 file_path=file_path,
@@ -432,18 +442,18 @@ class FDSNSource(Source):
 
     def _get_user_credentials(self):
         d = {}
-        if self._user_credentials is not None:
-            d['user'], d['passwd'] = self._user_credentials
+        if self.user_credentials is not None:
+            d['user'], d['passwd'] = self.user_credentials
 
-        if self._auth_token is not None:
-            d['token'] = self._auth_token
+        if self.auth_token is not None:
+            d['token'] = self.get_auth_token()
 
         return d
 
     def download_waveforms(
             self, squirrel, orders, success, error_permanent, error_temporary):
 
-        elog = ErrorLog(site=self._site)
+        elog = ErrorLog(site=self.site)
         orders.sort(key=orders_sort_key)
         neach = 20
         i = 0
@@ -459,7 +469,7 @@ class FDSNSource(Source):
             with tempfile.NamedTemporaryFile() as f:
                 try:
                     data = fdsn.dataselect(
-                        site=self._site, selection=selection_now,
+                        site=self.site, selection=selection_now,
                         **self._get_user_credentials())
 
                     now = time.time()
@@ -526,7 +536,6 @@ class FDSNSource(Source):
                     for order in orders_now:
                         elog.append(now, order, 'http error', str(e))
                         error_temporary(order)
-
 
             emessage = elog.summarize_recent()
             self._log_info_data(

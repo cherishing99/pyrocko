@@ -45,7 +45,7 @@ class Constraint(Object):
             self.tmax = max(constraint.tmax, self.tmax)
 
 
-class Source(object):
+class Source(Object):
 
     def update_channel_inventory(self, squirrel, constraint):
         '''

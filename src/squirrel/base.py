@@ -1,3 +1,8 @@
+# http://pyrocko.org - GPLv3
+#
+# The * Pyrocko Developers, 21st Century
+# ---|P------/S----------~Lg----------
+
 from __future__ import absolute_import, print_function
 
 import sys
@@ -11,22 +16,17 @@ from collections import defaultdict
 
 from pyrocko.io_common import FileLoadError
 from pyrocko.guts import Object, Int, List, Tuple, String, Timestamp, Dict
-from pyrocko import config, util
+from pyrocko import util
 
 from . import model, io
 
 from .model import to_kind_ids, to_kind_id, to_kind, separator, WaveformOrder
 from .client import fdsn, catalog
-from . import client
+from . import client, environment, error
 
 logger = logging.getLogger('pyrocko.squirrel.base')
 
-
-g_databases = {}
-
-
-class NotAvailable(Exception):
-    pass
+guts_prefix = 'pf'
 
 
 def lpick(condition, seq):
@@ -39,21 +39,6 @@ def lpick(condition, seq):
 
 def execute_get1(connection, sql, args):
     return list(connection.execute(sql, args))[0]
-
-
-def get_database(database=None):
-    if isinstance(database, Database):
-        return database
-
-    if database is None:
-        database = os.path.join(config.config().cache_dir, 'db.squirrel')
-
-    database = os.path.abspath(database)
-
-    if database not in g_databases:
-        g_databases[database] = Database(database)
-
-    return g_databases[database]
 
 
 g_icount = 0
@@ -159,8 +144,7 @@ class Selection(object):
     '''
     Database backed file selection.
 
-    :param database: :py:class:`Database` object or path to database or
-        ``None`` for user's default database
+    :param database: :py:class:`Database` object or path to database
     :param str persistent: if given a name, create a persistent selection
 
     By default, a temporary table in the database is created to hold the names
@@ -171,18 +155,16 @@ class Selection(object):
     :py:meth:`add` method.
     '''
 
-    def __init__(self, database=None, persistent=None):
-        if database is None and persistent is not None:
-            raise Exception(
-                'should not use persistent selection with shared global '
-                'database as this would impair its performance')
+    def __init__(self, database, persistent=None):
+        self._conn = None
 
-        database = get_database(database)
+        if not isinstance(database, Database):
+            database = get_database(database)
 
         if persistent is not None:
             assert isinstance(persistent, str)
             if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', persistent):
-                raise Exception(
+                raise error.SquirrelError(
                     'invalid persistent selection name: %s' % persistent)
 
             self.name = 'psel_' + persistent
@@ -214,10 +196,11 @@ class Selection(object):
             ''' % self._names)
 
     def __del__(self):
-        if not self._persistent:
-            self._delete()
-        else:
-            self._conn.commit()
+        if hasattr(self, '_conn') and self._conn:
+            if not self._persistent:
+                self._delete()
+            else:
+                self._conn.commit()
 
     def _register_table(self, s):
         return self._database._register_table(s)
@@ -588,6 +571,11 @@ class SquirrelStats(Object):
 
         codes = ['.'.join(x) for x in self.codes]
 
+        if len(codes) > 20:
+            codes = codes[:10] \
+                + ['[%i more]' % (len(codes) - 20)] \
+                + codes[-10:]
+
         scodes = '\n' + util.ewrap(codes, indent='  ') if codes else '<none>'
         stmin = util.tts(self.tmin) if self.tmin is not None else '<none>'
         stmax = util.tts(self.tmax) if self.tmax is not None else '<none>'
@@ -614,8 +602,7 @@ class Squirrel(Selection):
     '''
     Prompt, lazy, indexing, caching, dynamic seismological dataset access.
 
-    :param database: :py:class:`Database` object or path to database or
-        ``None`` for user's default database
+    :param database: :py:class:`Database` object or path to database
     :param str persistent: if given a name, create a persistent selection
 
     By default, temporary tables are created in the attached database to hold
@@ -627,10 +614,26 @@ class Squirrel(Selection):
     :py:meth:`add` method.
     '''
 
-    def __init__(self, database=None, persistent=None):
+    def __init__(
+            self, env=None, database=None, cache_path=None, persistent=None):
+
+        if not isinstance(env, environment.SquirrelEnvironment):
+            env = environment.get_environment(env)
+
+        if database is None:
+            database = env.database_path
+
+        if cache_path is None:
+            cache_path = env.cache_path
+
+        if persistent is None:
+            persistent = env.persistent
+
         Selection.__init__(self, database=database, persistent=persistent)
         c = self._conn
         self._contents = {}
+
+        self._cache_path = cache_path
 
         self._names.update({
             'nuts': self.name + '_nuts',
@@ -810,8 +813,9 @@ class Squirrel(Selection):
         :param kinds: if given, allowed content types to be made available
             through the squirrel selection.
         :type kinds: ``list`` of ``str``
-        :param str format: file format identifier or ``'detect'`` for
+        :param format: file format identifier or ``'detect'`` for
             auto-detection
+        :type format: str
 
         Complexity: O(log N)
         '''
@@ -1368,7 +1372,7 @@ class Squirrel(Selection):
                 self._contents[nut_loaded.key] = nut_loaded.content
 
         if nut.key not in self._contents:
-            raise NotAvailable(
+            raise error.NotAvailable(
                 'Unable to retrieve content: %s, %s, %s, %s' % nut.key)
 
         return self._contents[nut.key]
@@ -1436,14 +1440,6 @@ class Squirrel(Selection):
                         deltat=promise.deltat,
                         gaps=gaps(waveforms_avail, block_tmin, block_tmax)))
 
-                # after successful download delete block span from promise
-                # if gaps is empty (noop query), still delete it
-                # deletion means split promise
-
-        # setup order matrix
-        #   cols (code, tmin, tmax)
-        #   rows (source)
-
         orders_noop, orders = lpick(lambda order: order.gaps, orders)
         order_keys_noop = set(order_key(order) for order in orders_noop)
         logger.info(
@@ -1453,8 +1449,8 @@ class Squirrel(Selection):
         source_ids = []
         sources = {}
         for source in self._sources:
-            source_ids.append(source.source_id)
-            sources[source.source_id] = source
+            source_ids.append(source._source_id)
+            sources[source._source_id] = source
 
         source_priority = dict(
             (source_id, i) for (i, source_id) in enumerate(source_ids))
@@ -1475,16 +1471,6 @@ class Squirrel(Selection):
             del order_groups[order_key(order)]
 
         def split_promise(order):
-            promises = list(
-                self.get_nuts(
-                    'waveform_promise', order.tmin-100000, order.tmax+100000))
-
-            print('XXX')
-            print(order)
-            print('YYY')
-            for promise in promises:
-                print(promise)
-
             self.split_nuts(
                 'waveform_promise',
                 order.tmin, order.tmax,
@@ -1597,6 +1583,24 @@ class DatabaseStats(Object):
     Container to hold statistics about contents cached in meta-information db.
     '''
 
+    nfiles = Int.T(
+        help='number of files in database')
+    nnuts = Int.T(
+        help='number of index nuts in database')
+    codes = List.T(
+        Tuple.T(content_t=String.T()),
+        help='available code sequences in database, e.g. '
+             '(agency, network, station, location) for stations nuts.')
+    kinds = List.T(
+        String.T(),
+        help='available content types in database')
+    total_size = Int.T(
+        help='aggregated file size of files referenced in database')
+    counts = Dict.T(
+        String.T(), Dict.T(Tuple.T(content_t=String.T()), Int.T()),
+        help='breakdown of how many nuts of any content type and code '
+             'sequence are available in selection, ``counts[kind][codes]``')
+
     nfiles = Int.T()
     nnuts = Int.T()
     codes = List.T(List.T(String.T()))
@@ -1604,15 +1608,61 @@ class DatabaseStats(Object):
     total_size = Int.T()
     counts = Dict.T(String.T(), Dict.T(String.T(), Int.T()))
 
+    def __str__(self):
+        kind_counts = dict(
+            (kind, sum(self.counts[kind].values())) for kind in self.kinds)
+
+        codes = ['.'.join(x) for x in self.codes]
+
+        if len(codes) > 20:
+            codes = codes[:10] \
+                + ['[%i more]' % (len(codes) - 20)] \
+                + codes[-10:]
+
+        scodes = '\n' + util.ewrap(codes, indent='  ') if codes else '<none>'
+
+        s = '''
+available codes:               %s
+number of files:               %i
+total size of known files:     %s
+number of index nuts:          %i
+available nut kinds:           %s''' % (
+            scodes,
+            self.nfiles,
+            util.human_bytesize(self.total_size),
+            self.nnuts,
+            ', '.join('%s: %i' % (
+                kind, kind_counts[kind]) for kind in sorted(self.kinds)))
+
+        return s
+
+
+g_databases = {}
+
+
+def get_database(path=None):
+    path = os.path.abspath(path)
+    if path not in g_databases:
+        g_databases[path] = Database(path)
+
+    return g_databases[path]
+
 
 class Database(object):
     '''
     Shared meta-information database used by squirrel.
     '''
 
-    def __init__(self, database_path=':memory:', log_statements=True):
+    def __init__(self, database_path=':memory:', log_statements=False):
         self._database_path = database_path
-        self._conn = sqlite3.connect(database_path)
+        try:
+            util.ensuredirs(database_path)
+            logger.debug('Opening connection to database: %s' % database_path)
+            self._conn = sqlite3.connect(database_path)
+        except sqlite3.OperationalError:
+            raise error.SquirrelError(
+                'Cannot connect to database: %s' % database_path)
+
         self._conn.text_factory = str
         self._tables = {}
         self._initialize_db()

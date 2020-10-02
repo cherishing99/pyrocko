@@ -91,6 +91,23 @@ def detect_format(path):
     raise FormatDetectionFailed(path)
 
 
+def supported_formats():
+    '''
+    Get list of file formats supported by Squirrel.
+    '''
+    return sorted(g_format_providers.keys())
+
+
+g_content_kinds = ['waveform', 'station', 'channel', 'response', 'event']
+
+
+def supported_content_kinds():
+    '''
+    Get list of supported content kinds offered through Squirrel.
+    '''
+    return g_content_kinds
+
+
 def iload(
         paths,
         segment=None,
@@ -99,7 +116,7 @@ def iload(
         check=True,
         commit=True,
         skip_unchanged=False,
-        content=['waveform', 'station', 'channel', 'response', 'event']):
+        content=g_content_kinds):
 
     '''
     Iteratively load content or index/reindex meta-information from files.
@@ -194,8 +211,8 @@ def iload(
                     for nut in old_nuts)
 
                 if db_only_operation:
-                    logger.debug('using cached information for file %s, '
-                                 % path)
+                    # logger.debug('using cached information for file %s, '
+                    #              % path)
 
                     for nut in old_nuts:
                         if nut.kind_id in kind_ids:
@@ -258,6 +275,8 @@ def iload(
 __all__ = [
     'iload',
     'detect_format',
+    'supported_formats',
+    'supported_content_kinds',
     'get_backend',
     'FormatDetectionFailed',
     'UnknownFormat',
