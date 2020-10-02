@@ -1599,14 +1599,7 @@ class DatabaseStats(Object):
     counts = Dict.T(
         String.T(), Dict.T(Tuple.T(content_t=String.T()), Int.T()),
         help='breakdown of how many nuts of any content type and code '
-             'sequence are available in selection, ``counts[kind][codes]``')
-
-    nfiles = Int.T()
-    nnuts = Int.T()
-    codes = List.T(List.T(String.T()))
-    kinds = List.T(String.T())
-    total_size = Int.T()
-    counts = Dict.T(String.T(), Dict.T(String.T(), Int.T()))
+             'sequence are available in database, ``counts[kind][codes]``')
 
     def __str__(self):
         kind_counts = dict(
