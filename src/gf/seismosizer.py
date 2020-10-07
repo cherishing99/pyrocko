@@ -3038,6 +3038,7 @@ class PseudoDynamicRupture(SourceWithDerivedMagnitude):
             disl_norm=slip_norm,
             lamb=lamb,
             mu=mu)
+            # nthreads=self.nthreads)
 
         m6s *= patch_area
 
