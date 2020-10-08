@@ -83,7 +83,6 @@ class SquirrelEnvironment(Object):
             cache_path=os.path.join(squirrel_path, g_cache_dirname))
 
 
-
 __all__ = [
     'get_squirrel_path',
     'get_environment',

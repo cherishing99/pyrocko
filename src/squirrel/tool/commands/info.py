@@ -7,10 +7,13 @@ from __future__ import absolute_import, print_function
 
 from pyrocko import squirrel as sq
 
+from .. import common
+
+
 def setup(subparsers):
-    p = subparsers.add_parser(
-        'info',
-        help='show environment information')
+    p = common.add_parser(
+        subparsers, 'info',
+        help='Show environment information.')
 
     return p
 
