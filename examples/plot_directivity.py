@@ -40,4 +40,3 @@ resp = plot_directivity(
     plot_mt='full', show_phases=True,
     phase_begin='first{stored:begin}-10%',
     phase_end='last{stored:end}+20',
-    quantity='displacement', envelope=True)
