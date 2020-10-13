@@ -3799,4 +3799,5 @@ Range
 SourceGroup
 SourceList
 SourceGrid
+map_anchor
 '''.split()
