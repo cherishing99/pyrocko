@@ -205,8 +205,8 @@ class FDSNSource(Source):
     auth_token = String.T(optional=True)
     auth_token_path = String.T(optional=True)
 
-    def __init__(self, **kwargs):
-        Source.__init__(self, **kwargs)
+    def __init__(self, site, query_args=None, **kwargs):
+        Source.__init__(self, site=site, query_args=query_args, **kwargs)
 
         self._constraint = None
         self._hash = self.make_hash()

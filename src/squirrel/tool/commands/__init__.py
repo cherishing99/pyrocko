@@ -5,10 +5,9 @@
 
 from __future__ import absolute_import, print_function
 
-from . import info, init, scan
+import pkgutil
 
-command_modules = [
-    info,
-    init,
-    scan,
-]
+command_modules = []
+
+for _, modname, ispkg in pkgutil.iter_modules(__path__, __name__ + '.'):
+    command_modules.append(__import__(modname, fromlist='dummy'))

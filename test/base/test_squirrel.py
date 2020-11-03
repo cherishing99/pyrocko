@@ -206,26 +206,29 @@ class SquirrelTestCase(unittest.TestCase):
         tempdir = os.path.join(self.tempdir, 'test_add_update')
 
         def make_files(vers):
-            tr = trace.Trace(
-                tmin=float(vers),
-                deltat=1.0,
-                ydata=num.array([vers, vers], dtype=num.int32))
+            trs = [
+                trace.Trace(
+                    station='%02i' % i,
+                    tmin=float(vers),
+                    deltat=1.0,
+                    ydata=num.array([vers, vers], dtype=num.int32))
+                for i in range(2)]
 
-            return io.save(tr, op.join(tempdir, 'traces.mseed'))
+            return io.save(trs, op.join(tempdir, 'traces_%(station)s.mseed'))
 
         database = squirrel.Database()
-        sq = squirrel.Squirrel(database)
+        sq = squirrel.Squirrel(database=database)
 
         assert sq.get_nfiles() == 0
         assert sq.get_nnuts() == 0
 
         fns = make_files(0)
         sq.add(fns)
-        assert sq.get_nfiles() == 1
-        assert sq.get_nnuts() == 1
+        assert sq.get_nfiles() == 2
+        assert sq.get_nnuts() == 2
         sq.add(fns)
-        assert sq.get_nfiles() == 1
-        assert sq.get_nnuts() == 1
+        assert sq.get_nfiles() == 2
+        assert sq.get_nnuts() == 2
 
         assert sq.get_time_span() == (0., 1.)
 
@@ -233,48 +236,52 @@ class SquirrelTestCase(unittest.TestCase):
         sq.print_tables(stream=f)
         database.print_tables(stream=f)
 
-        time.sleep(2)
+        time.sleep(2.0)  # make sure modification time is different
 
         fns = make_files(1)
         sq.add(fns, check=False)
-        assert sq.get_nfiles() == 1
-        assert sq.get_nnuts() == 1
+        assert sq.get_nfiles() == 2
+        assert sq.get_nnuts() == 2
 
-        assert list(sq.iter_codes()) == [('', '', 'STA', '', '', '')]
+        assert sorted(sq.get_codes()) == [
+            ('', '', '00', '', '', ''), ('', '', '01', '', '', '')]
         assert list(sq.iter_kinds()) == ['waveform']
 
-        assert len(list(sq.get_nuts('waveform', tmin=-10., tmax=10.))) == 1
-        assert len(list(sq.get_nuts('waveform', tmin=-1., tmax=0.))) == 0
-        assert len(list(sq.get_nuts('waveform', tmin=0., tmax=1.))) == 1
-        assert len(list(sq.get_nuts('waveform', tmin=1., tmax=2.))) == 0
-        assert len(list(sq.get_nuts('waveform', tmin=-1., tmax=0.5))) == 1
-        assert len(list(sq.get_nuts('waveform', tmin=0.5, tmax=1.5))) == 1
-        assert len(list(sq.get_nuts('waveform', tmin=0.2, tmax=0.7))) == 1
+        assert len(sq.get_nuts('waveform', tmin=-10., tmax=10.)) == 2
+        assert len(sq.get_nuts('waveform', tmin=-1., tmax=0.)) == 0
+        assert len(sq.get_nuts('waveform', tmin=0., tmax=1.)) == 2
+        assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 0
+        assert len(sq.get_nuts('waveform', tmin=-1., tmax=0.5)) == 2
+        assert len(sq.get_nuts('waveform', tmin=0.5, tmax=1.5)) == 2
+        assert len(sq.get_nuts('waveform', tmin=0.2, tmax=0.7)) == 2
 
         sq.add(fns, check=True)
-        assert sq.get_nfiles() == 1
-        assert sq.get_nnuts() == 1
+        assert sq.get_nfiles() == 2
+        assert sq.get_nnuts() == 2
 
-        assert list(sq.iter_codes()) == [('', '', 'STA', '', '', '')]
+        assert sorted(sq.get_codes()) == [
+            ('', '', '00', '', '', ''), ('', '', '01', '', '', '')]
         assert list(sq.iter_kinds()) == ['waveform']
 
-        assert len(list(sq.get_nuts('waveform', tmin=-10., tmax=10.))) == 1
+        assert len(sq.get_nuts('waveform', tmin=-10., tmax=10.)) == 2
+        assert len(sq.get_nuts('waveform', tmin=0., tmax=1.)) == 0
+        assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 2
 
         shutil.rmtree(tempdir)
 
         sq.add(fns, check=True)
-        assert sq.get_nfiles() == 1
+        assert sq.get_nfiles() == 2
         assert sq.get_nnuts() == 0
 
         assert list(sq.iter_codes()) == []
         assert list(sq.iter_kinds()) == []
 
-        assert len(list(sq.get_nuts('waveform', tmin=-10., tmax=10.))) == 0
+        assert len(sq.get_nuts('waveform', tmin=-10., tmax=10.)) == 0
 
         fns = make_files(2)
         sq.add(fns)
-        assert sq.get_nfiles() == 1
-        assert sq.get_nnuts() == 1
+        assert sq.get_nfiles() == 2
+        assert sq.get_nnuts() == 2
         sq.remove(fns)
         assert sq.get_nfiles() == 0
         assert sq.get_nnuts() == 0
@@ -362,7 +369,7 @@ class SquirrelTestCase(unittest.TestCase):
                 tmax = tmin_g + (iwin+1) * tinc
 
                 expect.append(
-                    len(list(sq._get_nuts_naiv(
+                    len(list(sq._iter_nuts_naiv(
                         'undefined', tmin=tmin, tmax=tmax))))
                 assert expect[-1] >= 10
 
@@ -371,9 +378,8 @@ class SquirrelTestCase(unittest.TestCase):
                 tmin = tmin_g + iwin * tinc
                 tmax = tmin_g + (iwin+1) * tinc
 
-                assert len(list(
-                    sq.get_nuts(
-                        'undefined', tmin=tmin, tmax=tmax))) == expect[iwin]
+                assert len(sq.get_nuts(
+                    'undefined', tmin=tmin, tmax=tmax)) == expect[iwin]
 
         return bench
 
@@ -529,7 +535,7 @@ class SquirrelTestCase(unittest.TestCase):
 
             sq.add(fns1)
 
-            sq2 = squirrel.Squirrel(sq.get_database())
+            sq2 = squirrel.Squirrel(database=sq.get_database())
             sq2.add(fns2)
             del sq2
 

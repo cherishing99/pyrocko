@@ -34,49 +34,10 @@ startup of Squirrel-based applications, persistent selections created with the
 After scanning, information about the current data selection is printed.
 ''')
 
-    p.add_argument(
-        'paths',
-        nargs='*',
-        help='Files and directories with waveforms, metadata and events.')
-
-    p.add_argument(
-        '--optimistic', '-o',
-        action='store_false',
-        dest='check',
-        default=True,
-        help='Disable checking file modification times.')
-
-    p.add_argument(
-        '--persistent', '-p',
-        dest='persistent',
-        metavar='NAME',
-        help='Create/use persistent selection with given NAME. Persistent '
-             'selections can be used to speed up startup of Squirrel-based '
-             'applications.')
-
-    p.add_argument(
-        '--format', '-f',
-        dest='format',
-        metavar='FORMAT',
-        default='detect',
-        choices=sq.supported_formats(),
-        help='Assume input files are of given FORMAT. Choices: %(choices)s. '
-             'Default: %(default)s.')
-
-    p.add_argument(
-        '--content', '-c',
-        type=common.csvtype(sq.supported_content_kinds()),
-        dest='kinds',
-        help='Restrict meta-data scanning to given content kinds. '
-             'KINDS is a comma-separated list of content kinds, choices: %s. '
-             'By default, all content kinds are indexed.'
-             % ', '.join(sq.supported_content_kinds()))
-
+    common.add_selection_arguments(p)
     return p
 
 
 def call(parser, args):
-    s = sq.Squirrel(persistent=args.persistent)
-    kinds = args.kinds or None
-    s.add(args.paths, check=args.check, format=args.format, kinds=kinds)
-    print(s)
+    squirrel = common.squirrel_from_selection_arguments(args)
+    print(squirrel)

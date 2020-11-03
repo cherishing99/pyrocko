@@ -43,6 +43,16 @@ def to_kind_ids(kinds):
     return [g_content_kinds.index(kind) for kind in kinds]
 
 
+g_kind_mask_all = 0xff
+
+
+def to_kind_mask(kinds):
+    if kinds:
+        return sum(1 << kind_id for kind_id in to_kind_ids(kinds))
+    else:
+        return g_kind_mask_all
+
+
 def str_or_none(x):
     if x is None:
         return None

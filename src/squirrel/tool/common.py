@@ -7,6 +7,8 @@ from __future__ import absolute_import, print_function
 
 import argparse
 
+from pyrocko import util
+
 
 class PyrockoHelpFormatter(argparse.RawDescriptionHelpFormatter):
     def __init__(self, *args, **kwargs):
@@ -51,3 +53,87 @@ def add_parser(subparsers, *args, **kwargs):
         action='store_true',
         help='Show this help message and exit.')
     return p
+
+
+def add_selection_arguments(p):
+    from pyrocko import squirrel as sq
+
+    p.add_argument(
+        'paths',
+        nargs='*',
+        help='Files and directories with waveforms, metadata and events.')
+
+    p.add_argument(
+        '--optimistic', '-o',
+        action='store_false',
+        dest='check',
+        default=True,
+        help='Disable checking file modification times.')
+
+    p.add_argument(
+        '--format', '-f',
+        dest='format',
+        metavar='FORMAT',
+        default='detect',
+        choices=sq.supported_formats(),
+        help='Assume input files are of given FORMAT. Choices: %(choices)s. '
+             'Default: %(default)s.')
+
+    p.add_argument(
+        '--kind', '-k',
+        type=csvtype(sq.supported_content_kinds()),
+        dest='kinds',
+        help='Restrict meta-data scanning to given content kinds. '
+             'KINDS is a comma-separated list of content kinds, choices: %s. '
+             'By default, all content kinds are indexed.'
+             % ', '.join(sq.supported_content_kinds()))
+
+    p.add_argument(
+        '--persistent', '-p',
+        dest='persistent',
+        metavar='NAME',
+        help='Create/use persistent selection with given NAME. Persistent '
+             'selections can be used to speed up startup of Squirrel-based '
+             'applications.')
+
+
+def squirrel_from_selection_arguments(args):
+    from pyrocko import squirrel as sq
+    squirrel = sq.Squirrel(persistent=args.persistent)
+    kinds = args.kinds or None
+    squirrel.add(args.paths, check=args.check, format=args.format, kinds=kinds)
+    return squirrel
+
+
+def add_query_arguments(p):
+    p.add_argument(
+        '--codes',
+        dest='codes',
+        metavar='CODES',
+        help='Code pattern to query (AGENCY.NET.STA.LOC.CHA).')
+
+    p.add_argument(
+        '--tmin',
+        dest='tmin',
+        metavar='TIME',
+        help='Begin of time interval to query.')
+
+    p.add_argument(
+        '--tmax',
+        dest='tmax',
+        metavar='TIME',
+        help='End of time interval to query.')
+
+
+def squirrel_query_from_arguments(args):
+    d = {}
+    if args.kinds:
+        d['kind'] = args.kinds
+    if args.tmin:
+        d['tmin'] = util.str_to_time(args.tmin)
+    if args.tmax:
+        d['tmax'] = util.str_to_time(args.tmax)
+    if args.codes:
+        d['codes'] = args.codes
+
+    return d

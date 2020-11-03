@@ -181,19 +181,20 @@ class Selection(object):
             'file_states': self.name + '_file_states',
             'bulkinsert': self.name + '_bulkinsert'}
 
-        self._conn.execute(self._register_table(
+        self._conn.execute(self._register_table(self._sql(
             '''
                 CREATE TABLE IF NOT EXISTS %(db)s.%(file_states)s (
                     file_id integer PRIMARY KEY,
-                    file_state integer)
-            ''' % self._names))
+                    file_state integer,
+                    kind_mask integer)
+            ''')))
 
-        self._conn.execute(
+        self._conn.execute(self._sql(
             '''
                 CREATE INDEX
                 IF NOT EXISTS %(db)s.%(file_states)s_index_file_state
                 ON %(file_states)s (file_state)
-            ''' % self._names)
+            '''))
 
     def __del__(self):
         if hasattr(self, '_conn') and self._conn:
@@ -204,6 +205,9 @@ class Selection(object):
 
     def _register_table(self, s):
         return self._database._register_table(s)
+
+    def _sql(self, s):
+        return s % self._names
 
     def get_database(self):
         '''
@@ -217,8 +221,8 @@ class Selection(object):
         '''
         Destroy the tables assoctiated with this selection.
         '''
-        self._conn.execute(
-            'DROP TABLE %(db)s.%(file_states)s' % self._names)
+        self._conn.execute(self._sql(
+            'DROP TABLE %(db)s.%(file_states)s'))
 
         self._conn.commit()
 
@@ -257,7 +261,7 @@ class Selection(object):
             # self._conn.execute('ROLLBACK')
             raise
 
-    def add(self, file_paths):
+    def add(self, file_paths, kind_mask=model.g_kind_mask_all):
         '''
         Add files to the selection.
 
@@ -280,71 +284,92 @@ class Selection(object):
                         VALUES (NULL, ?, NULL, NULL, NULL)
                     ''', ((x,) for x in file_paths))
 
-                self._conn.executemany(
+                self._conn.executemany(self._sql(
+                    '''
+                        DELETE FROM %(db)s.%(file_states)s
+                        WHERE file_id IN (
+                            SELECT files.file_id
+                                FROM files
+                                WHERE files.path == ? )
+                            AND kind_mask != ?
+                    '''), (
+                        (path, kind_mask) for path in file_paths))
+
+                self._conn.executemany(self._sql(
                     '''
                         INSERT OR IGNORE INTO %(db)s.%(file_states)s
-                        SELECT files.file_id, 0
+                        SELECT files.file_id, 0, ?
                         FROM files
                         WHERE files.path = ?
-                    ''' % self._names, (
-                        (filepath,) for filepath in file_paths))
+                    '''), ((kind_mask, path) for path in file_paths))
 
-                self._conn.executemany(
+                self._conn.executemany(self._sql(
                     '''
                         UPDATE %(db)s.%(file_states)s
                         SET file_state = 1
-                        WHERE (
+                        WHERE file_id IN (
                             SELECT files.file_id
                                 FROM files
-                                WHERE files.path == ? ) == file_id
+                                WHERE files.path == ? )
                             AND file_state != 0
-                    ''' % self._names, ((x,) for x in file_paths))
+                    '''), ((path,) for path in file_paths))
 
                 return
 
         except TypeError:
             pass
 
-        self._conn.execute(
+        self._conn.execute(self._sql(
             '''
                 CREATE TEMP TABLE temp.%(bulkinsert)s
                 (path text)
-            ''' % self._names)
+            '''))
 
-        self._conn.executemany(
-            'INSERT INTO temp.%(bulkinsert)s VALUES (?)' % self._names,
+        self._conn.executemany(self._sql(
+            'INSERT INTO temp.%(bulkinsert)s VALUES (?)'),
             ((x,) for x in file_paths))
 
-        self._conn.execute(
+        self._conn.execute(self._sql(
             '''
                 INSERT OR IGNORE INTO files
                 SELECT NULL, path, NULL, NULL, NULL
                 FROM temp.%(bulkinsert)s
-            ''' % self._names)
+            '''))
 
-        self._conn.execute(
+        self._conn.execute(self._sql(
             '''
-                INSERT OR IGNORE INTO %(db)s.%(file_states)s
-                SELECT files.file_id, 0
-                FROM temp.%(bulkinsert)s
-                INNER JOIN files
-                ON temp.%(bulkinsert)s.path == files.path
-            ''' % self._names)
-
-        self._conn.execute(
-            '''
-                UPDATE %(db)s.%(file_states)s
-                SET file_state = 1
-                WHERE (
+                DELETE FROM %(db)s.%(file_states)s
+                WHERE file_id IN (
                     SELECT files.file_id
                         FROM temp.%(bulkinsert)s
                         INNER JOIN files
-                        ON temp.%(bulkinsert)s.path == files.path) == file_id
-                    AND file_state != 0
-            ''' % self._names)
+                        ON temp.%(bulkinsert)s.path == files.path)
+                    AND kind_mask != ?
+            '''), (kind_mask,))
 
-        self._conn.execute(
-            'DROP TABLE temp.%(bulkinsert)s' % self._names)
+        self._conn.execute(self._sql(
+            '''
+                INSERT OR IGNORE INTO %(db)s.%(file_states)s
+                SELECT files.file_id, 0, ?
+                FROM temp.%(bulkinsert)s
+                INNER JOIN files
+                ON temp.%(bulkinsert)s.path == files.path
+            '''), (kind_mask,))
+
+        self._conn.execute(self._sql(
+            '''
+                UPDATE %(db)s.%(file_states)s
+                SET file_state = 1
+                WHERE file_id IN (
+                    SELECT files.file_id
+                        FROM temp.%(bulkinsert)s
+                        INNER JOIN files
+                        ON temp.%(bulkinsert)s.path == files.path)
+                    AND file_state != 0
+            '''))
+
+        self._conn.execute(self._sql(
+            'DROP TABLE temp.%(bulkinsert)s'))
 
     def remove(self, file_paths):
         '''
@@ -356,25 +381,25 @@ class Selection(object):
         if isinstance(file_paths, str):
             file_paths = [file_paths]
 
-        self._conn.executemany(
+        self._conn.executemany(self._sql(
             '''
                 DELETE FROM %(db)s.%(file_states)s
-                WHERE %(db)s.%(file_states)s.file_id ==
+                WHERE %(db)s.%(file_states)s.file_id IN
                     (SELECT files.file_id
                      FROM files
                      WHERE files.path == ?)
-            ''' % self._names, ((path,) for path in file_paths))
+            '''), ((path,) for path in file_paths))
 
     def set_file_states_known(self):
         '''
         Set file states to "known" (2).
         '''
-        self._conn.execute(
+        self._conn.execute(self._sql(
             '''
                 UPDATE %(db)s.%(file_states)s
                 SET file_state = 2
                 WHERE file_state < 2
-            ''' % self._names)
+            '''))
 
     def undig_grouped(self, skip_unchanged=False):
         '''
@@ -396,7 +421,7 @@ class Selection(object):
         else:
             where = ''
 
-        sql = ('''
+        sql = self._sql('''
             SELECT
                 files.path,
                 files.format,
@@ -420,7 +445,7 @@ class Selection(object):
                 ON nuts.kind_codes_id == kind_codes.kind_codes_id
         ''' + where + '''
             ORDER BY %(db)s.%(file_states)s.file_id
-        ''') % self._names
+        ''')
 
         nuts = []
         path = None
@@ -438,14 +463,14 @@ class Selection(object):
             yield path, nuts
 
     def iter_paths(self):
-        sql = ('''
+        sql = self._sql('''
             SELECT
                 files.path
             FROM %(db)s.%(file_states)s
             INNER JOIN files
             ON files.file_id = %(db)s.%(file_states)s.file_id
             ORDER BY %(db)s.%(file_states)s.file_id
-        ''') % self._names
+        ''')
 
         for values in self._conn.execute(sql):
             yield values[0]
@@ -465,7 +490,7 @@ class Selection(object):
         modified files.
         '''
 
-        sql = '''
+        sql = self._sql('''
             UPDATE %(db)s.%(file_states)s
             SET file_state = 0
             WHERE (
@@ -473,24 +498,24 @@ class Selection(object):
                 FROM files
                 WHERE files.file_id == %(db)s.%(file_states)s.file_id) IS NULL
                 AND file_state == 1
-        ''' % self._names
+        ''')
 
         self._conn.execute(sql)
 
         if not check:
 
-            sql = '''
+            sql = self._sql('''
                 UPDATE %(db)s.%(file_states)s
                 SET file_state = 2
                 WHERE file_state == 1
-            ''' % self._names
+            ''')
 
             self._conn.execute(sql)
 
             return
 
         def iter_file_states():
-            sql = '''
+            sql = self._sql('''
                 SELECT
                     files.file_id,
                     files.path,
@@ -502,7 +527,7 @@ class Selection(object):
                     ON %(db)s.%(file_states)s.file_id == files.file_id
                 WHERE %(db)s.%(file_states)s.file_state == 1
                 ORDER BY %(db)s.%(file_states)s.file_id
-            ''' % self._names
+            ''')
 
             for (file_id, path, fmt, mtime_db,
                     size_db) in self._conn.execute(sql):
@@ -524,11 +549,11 @@ class Selection(object):
 
         # could better use callback function here...
 
-        sql = '''
+        sql = self._sql('''
             UPDATE %(db)s.%(file_states)s
             SET file_state = ?
             WHERE file_id = ?
-        ''' % self._names
+        ''')
 
         self._conn.executemany(sql, iter_file_states())
 
@@ -639,7 +664,7 @@ class Squirrel(Selection):
             'nuts': self.name + '_nuts',
             'kind_codes_count': self.name + '_kind_codes_count'})
 
-        c.execute(self._register_table(
+        c.execute(self._register_table(self._sql(
             '''
                 CREATE TABLE IF NOT EXISTS %(db)s.%(nuts)s (
                     nut_id integer PRIMARY KEY,
@@ -654,64 +679,64 @@ class Squirrel(Selection):
                     tmax_offset float,
                     deltat float,
                     kscale integer)
-            ''' % self._names))
+            ''')))
 
-        c.execute(
+        c.execute(self._sql(
             '''
                 CREATE UNIQUE INDEX IF NOT EXISTS %(db)s.%(nuts)s_file_element
                     ON %(nuts)s (file_id, file_segment, file_element)
-            ''' % self._names)
+            '''))
 
-        c.execute(self._register_table(
+        c.execute(self._register_table(self._sql(
             '''
                 CREATE TABLE IF NOT EXISTS %(db)s.%(kind_codes_count)s (
                     kind_codes_id integer PRIMARY KEY,
                     count integer)
-            ''' % self._names))
+            ''')))
 
-        c.execute(
+        c.execute(self._sql(
             '''
                 CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_file_id
                 ON %(nuts)s (file_id)
-            ''' % self._names)
+            '''))
 
-        c.execute(
+        c.execute(self._sql(
             '''
                 CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_tmin_seconds
                 ON %(nuts)s (tmin_seconds)
-            ''' % self._names)
+            '''))
 
-        c.execute(
+        c.execute(self._sql(
             '''
                 CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_tmax_seconds
                 ON %(nuts)s (tmax_seconds)
-            ''' % self._names)
+            '''))
 
-        c.execute(
+        c.execute(self._sql(
             '''
                 CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_kscale
                 ON %(nuts)s (kind_id, kscale, tmin_seconds)
-            ''' % self._names)
+            '''))
 
-        c.execute(
+        c.execute(self._sql(
             '''
                 CREATE TRIGGER IF NOT EXISTS %(db)s.%(nuts)s_delete_nuts
                 BEFORE DELETE ON main.files FOR EACH ROW
                 BEGIN
                   DELETE FROM %(nuts)s WHERE file_id == old.file_id;
                 END
-            ''' % self._names)
+            '''))
 
-        c.execute(
+        c.execute(self._sql(
             '''
                 CREATE TRIGGER IF NOT EXISTS %(db)s.%(nuts)s_delete_nuts2
                 BEFORE UPDATE ON main.files FOR EACH ROW
                 BEGIN
                   DELETE FROM %(nuts)s WHERE file_id == old.file_id;
                 END
-            ''' % self._names)
+            '''))
 
-        c.execute(
+        c.execute(self._sql(
             '''
                 CREATE TRIGGER IF NOT EXISTS
                     %(db)s.%(file_states)s_delete_files
@@ -719,9 +744,9 @@ class Squirrel(Selection):
                 BEGIN
                     DELETE FROM %(nuts)s WHERE file_id == old.file_id;
                 END
-            ''' % self._names)
+            '''))
 
-        c.execute(
+        c.execute(self._sql(
             '''
                 CREATE TRIGGER IF NOT EXISTS %(db)s.%(nuts)s_inc_kind_codes
                 BEFORE INSERT ON %(nuts)s FOR EACH ROW
@@ -733,9 +758,9 @@ class Squirrel(Selection):
                     WHERE new.kind_codes_id
                         == %(kind_codes_count)s.kind_codes_id;
                 END
-            ''' % self._names)
+            '''))
 
-        c.execute(
+        c.execute(self._sql(
             '''
                 CREATE TRIGGER IF NOT EXISTS %(db)s.%(nuts)s_dec_kind_codes
                 BEFORE DELETE ON %(nuts)s FOR EACH ROW
@@ -745,7 +770,7 @@ class Squirrel(Selection):
                     WHERE old.kind_codes_id
                         == %(kind_codes_count)s.kind_codes_id;
                 END
-            ''' % self._names)
+            '''))
 
     def _delete(self):
         '''Delete database tables associated with this squirrel.'''
@@ -760,7 +785,7 @@ class Squirrel(Selection):
                 DROP TABLE %(db)s.%(kind_codes_count)s;
                 '''.strip().splitlines():
 
-            self._conn.execute(s % self._names)
+            self._conn.execute(self._sql(s))
 
         Selection._delete(self)
 
@@ -825,7 +850,9 @@ class Squirrel(Selection):
         if isinstance(file_paths, str):
             file_paths = [file_paths]
 
-        Selection.add(self, self.iter_expand_dirs(file_paths))
+        kind_mask = model.to_kind_mask(kinds)
+
+        Selection.add(self, self.iter_expand_dirs(file_paths), kind_mask)
         self._load(format, check)
         self._update_nuts(kinds)
 
@@ -873,7 +900,7 @@ class Squirrel(Selection):
                 '?'*len(kinds))
             args.extend(to_kind_ids(kinds))
 
-        c.execute((
+        c.execute(self._sql(
             '''
                 INSERT INTO %(db)s.%(nuts)s
                 SELECT NULL,
@@ -889,7 +916,7 @@ class Squirrel(Selection):
                     ON nuts.kind_codes_id ==
                        kind_codes.kind_codes_id
                 WHERE %(db)s.%(file_states)s.file_state != 2
-            ''' + w_kinds) % self._names, args)
+            ''' + w_kinds), args)
 
         self.set_file_states_known()
 
@@ -939,12 +966,11 @@ class Squirrel(Selection):
 
         return tmin, tmax, codes
 
-    def get_nuts(
-            self, kind, tmin, tmax, codes=None):
+    def iter_nuts(self, kind=None, tmin=None, tmax=None, codes=None):
         '''
         Iterate content intersecting with the half open interval [tmin, tmax[.
 
-        :param kind: ``str``, content kind to extract
+        :param kind: ``str``, content kind to extract or sequence of such
         :param tmin: timestamp, start time of interval
         :param tmax: timestamp, end time of interval
         :param codes: tuple of str, pattern of content codes to be matched
@@ -955,37 +981,60 @@ class Squirrel(Selection):
         intersecting content.
         '''
 
-        tmin_seconds, tmin_offset = model.tsplit(tmin)
-        tmax_seconds, tmax_offset = model.tsplit(tmax)
+        if not isinstance(kind, str):
+            if kind is None:
+                kind = model.g_content_kinds
+            for kind_ in kind:
+                for nut in self.iter_nuts(kind_, tmin, tmax, codes):
+                    yield nut
 
-        tscale_edges = model.tscale_edges
+            return
 
+        extra_cond = []
         tmin_cond = []
         args = []
-        for kscale in range(tscale_edges.size + 1):
-            if kscale != tscale_edges.size:
-                tscale = int(tscale_edges[kscale])
-                tmin_cond.append('''
-                    (%(db)s.%(nuts)s.kind_id = ?
-                        AND %(db)s.%(nuts)s.kscale == ?
-                        AND %(db)s.%(nuts)s.tmin_seconds BETWEEN ? AND ?)
-                ''')
-                args.extend(
-                    (to_kind_id(kind), kscale,
-                     tmin_seconds - tscale - 1, tmax_seconds + 1))
 
-            else:
-                tmin_cond.append('''
-                    (%(db)s.%(nuts)s.kind_id == ?
-                        AND %(db)s.%(nuts)s.kscale == ?
-                        AND %(db)s.%(nuts)s.tmin_seconds <= ?)
-                ''')
+        if tmin is not None or tmax is not None:
+            assert kind is not None
+            if tmin is None:
+                tmin = self.get_time_span()[0]
+            if tmax is None:
+                tmax = self.get_time_span()[1]
 
-                args.extend(
-                    (to_kind_id(kind), kscale, tmax_seconds + 1))
+            tmin_seconds, tmin_offset = model.tsplit(tmin)
+            tmax_seconds, tmax_offset = model.tsplit(tmax)
 
-        extra_cond = ['%(db)s.%(nuts)s.tmax_seconds >= ?']
-        args.append(tmin_seconds)
+            tscale_edges = model.tscale_edges
+
+            for kscale in range(tscale_edges.size + 1):
+                if kscale != tscale_edges.size:
+                    tscale = int(tscale_edges[kscale])
+                    tmin_cond.append('''
+                        (%(db)s.%(nuts)s.kind_id = ?
+                            AND %(db)s.%(nuts)s.kscale == ?
+                            AND %(db)s.%(nuts)s.tmin_seconds BETWEEN ? AND ?)
+                    ''')
+                    args.extend(
+                        (to_kind_id(kind), kscale,
+                         tmin_seconds - tscale - 1, tmax_seconds + 1))
+
+                else:
+                    tmin_cond.append('''
+                        (%(db)s.%(nuts)s.kind_id == ?
+                            AND %(db)s.%(nuts)s.kscale == ?
+                            AND %(db)s.%(nuts)s.tmin_seconds <= ?)
+                    ''')
+
+                    args.extend(
+                        (to_kind_id(kind), kscale, tmax_seconds + 1))
+
+            extra_cond.append('%(db)s.%(nuts)s.tmax_seconds >= ?')
+            args.append(tmin_seconds)
+
+        elif kind is not None:
+            extra_cond.append('%(db)s.%(nuts)s.kind_id == ?')
+            args.append(to_kind_id(kind))
+
         if codes is not None:
             pats = codes_patterns_for_kind(kind, codes)
             extra_cond.append(
@@ -1013,15 +1062,28 @@ class Squirrel(Selection):
                 ON files.file_id == %(db)s.%(nuts)s.file_id
             INNER JOIN kind_codes
                 ON %(db)s.%(nuts)s.kind_codes_id == kind_codes.kind_codes_id
-            WHERE ( ''' + ' OR '.join(tmin_cond) + ''' )
-                AND ''' + ' AND '.join(extra_cond)) % self._names
+            ''')
+
+        cond = []
+        if tmin_cond:
+            cond.append(' ( ' + ' OR '.join(tmin_cond) + ' ) ')
+
+        cond.extend(extra_cond)
+
+        if cond:
+            sql += ''' WHERE ''' + ' AND '.join(cond)
+
+        sql = self._sql(sql)
 
         for row in self._conn.execute(sql, args):
             nut = model.Nut(values_nocheck=row)
-            if nut.tmin < tmax and tmin < nut.tmax:
+            if tmin is None or (nut.tmin < tmax and tmin < nut.tmax):
                 yield nut
 
-    def _get_nuts_naiv(self, kind, tmin=None, tmax=None):
+    def get_nuts(self, *args, **kwargs):
+        return list(self.iter_nuts(*args, **kwargs))
+
+    def _iter_nuts_naiv(self, kind, tmin=None, tmax=None):
         tmin_seconds, tmin_offset = model.tsplit(tmin)
         tmax_seconds, tmax_offset = model.tsplit(tmax)
 
@@ -1030,7 +1092,7 @@ class Squirrel(Selection):
             tmin = tmin_avail
             tmax = tmax_avail
 
-        sql = '''
+        sql = self._sql('''
             SELECT
                 files.path,
                 files.format,
@@ -1053,7 +1115,7 @@ class Squirrel(Selection):
             WHERE %(db)s.%(nuts)s.kind_id = ?
                 AND %(db)s.%(nuts)s.tmax_seconds >= ?
                 AND %(db)s.%(nuts)s.tmin_seconds <= ?
-        ''' % self._names
+        ''')
 
         for row in self._conn.execute(
                 sql, (to_kind_id(kind), tmin_seconds, tmax_seconds+1)):
@@ -1107,7 +1169,7 @@ class Squirrel(Selection):
             extra_cond.append('files.path == ?')
             args.append(file_path)
 
-        sql = ('''
+        sql = self._sql('''
             SELECT
                 %(db)s.%(nuts)s.nut_id,
                 %(db)s.%(nuts)s.tmin_seconds,
@@ -1121,7 +1183,7 @@ class Squirrel(Selection):
             INNER JOIN kind_codes
                 ON %(db)s.%(nuts)s.kind_codes_id == kind_codes.kind_codes_id
             WHERE ( ''' + ' OR '.join(tmin_cond) + ''' )
-                AND ''' + ' AND '.join(extra_cond)) % self._names
+                AND ''' + ' AND '.join(extra_cond))
 
         insert = []
         delete = []
@@ -1164,10 +1226,10 @@ class Squirrel(Selection):
                 FROM %(db)s.%(nuts)s
                 WHERE nut_id == ?
         '''
-        self._conn.executemany(sql_add % self._names, insert)
+        self._conn.executemany(self._sql(sql_add), insert)
 
         sql_delete = '''DELETE FROM %(db)s.%(nuts)s WHERE nut_id == ?'''
-        self._conn.executemany(sql_delete % self._names, delete)
+        self._conn.executemany(self._sql(sql_delete), delete)
 
     def get_time_span(self):
         '''
@@ -1177,20 +1239,20 @@ class Squirrel(Selection):
 
         :returns: (tmin, tmax)
         '''
-        sql = '''
+        sql = self._sql('''
             SELECT MIN(tmin_seconds + tmin_offset)
             FROM %(db)s.%(nuts)s WHERE
             tmin_seconds == (SELECT MIN(tmin_seconds) FROM %(db)s.%(nuts)s)
-        ''' % self._names
+        ''')
         tmin = None
         for row in self._conn.execute(sql):
             tmin = row[0]
 
-        sql = '''
+        sql = self._sql('''
             SELECT MAX(tmax_seconds + tmax_offset)
             FROM %(db)s.%(nuts)s WHERE
             tmax_seconds == (SELECT MAX(tmax_seconds) FROM %(db)s.%(nuts)s)
-        ''' % self._names
+        ''')
         tmax = None
         for row in self._conn.execute(sql):
             tmax = row[0]
@@ -1310,25 +1372,33 @@ class Squirrel(Selection):
             source.update_waveform_inventory(self, constraint)
 
     def get_nfiles(self):
-        '''Get number of files in selection.'''
+        '''
+        Get number of files in selection.
+        '''
 
-        sql = '''SELECT COUNT(*) FROM %(db)s.%(file_states)s''' % self._names
+        sql = self._sql('''SELECT COUNT(*) FROM %(db)s.%(file_states)s''')
         for row in self._conn.execute(sql):
             return row[0]
 
     def get_nnuts(self):
-        '''Get number of nuts in selection.'''
-        sql = '''SELECT COUNT(*) FROM %(db)s.%(nuts)s''' % self._names
+        '''
+        Get number of nuts in selection.
+        '''
+
+        sql = self._sql('''SELECT COUNT(*) FROM %(db)s.%(nuts)s''')
         for row in self._conn.execute(sql):
             return row[0]
 
     def get_total_size(self):
-        '''Get aggregated file size available in selection.'''
-        sql = '''
+        '''
+        Get aggregated file size available in selection.
+        '''
+
+        sql = self._sql('''
             SELECT SUM(files.size) FROM %(db)s.%(file_states)s
             INNER JOIN files
                 ON %(db)s.%(file_states)s.file_id = files.file_id
-        ''' % self._names
+        ''')
 
         for row in self._conn.execute(sql):
             return row[0] or 0
@@ -1391,28 +1461,28 @@ class Squirrel(Selection):
     def get_stations(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
         nuts = sorted(
-            self.get_nuts('station', *args), key=lambda nut: nut.dkey)
+            self.iter_nuts('station', *args), key=lambda nut: nut.dkey)
         self.check_duplicates(nuts)
         return [self.get_content(nut) for nut in nuts]
 
     def get_channels(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
         nuts = sorted(
-            self.get_nuts('channel', *args), key=lambda nut: nut.dkey)
+            self.iter_nuts('channel', *args), key=lambda nut: nut.dkey)
         self.check_duplicates(nuts)
         return [self.get_content(nut) for nut in nuts]
 
     def get_events(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
         nuts = sorted(
-            self.get_nuts('event', *args), key=lambda nut: nut.dkey)
+            self.iter_nuts('event', *args), key=lambda nut: nut.dkey)
         self.check_duplicates(nuts)
         return [self.get_content(nut) for nut in nuts]
 
     def _redeem_promises(self, *args):
 
-        waveforms = list(self.get_nuts('waveform', *args))
-        promises = list(self.get_nuts('waveform_promise', *args))
+        waveforms = list(self.iter_nuts('waveform', *args))
+        promises = list(self.iter_nuts('waveform_promise', *args))
 
         tmin, tmax, _ = args
         codes_to_avail = defaultdict(list)
@@ -1516,7 +1586,7 @@ class Squirrel(Selection):
     def get_waveforms(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
         self._redeem_promises(*args)
-        nuts = list(self.get_nuts('waveform', *args))
+        nuts = list(self.iter_nuts('waveform', *args))
         # self.check_duplicates(nuts)
         return sorted(self.get_content(nut) for nut in nuts)
 

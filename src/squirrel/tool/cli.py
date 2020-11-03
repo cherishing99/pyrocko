@@ -25,20 +25,21 @@ def main(args=None):
         description='''
 Pyrocko Squirrel - Prompt seismological data access with a fluffy tail.
 
-This utility program provides a command line front-end to Pyrocko's new data
-access infrastructure "Squirrel". This infrastructure offers meta-data caching,
-blazingly fast data lookup for huge datasets and transparent online data access
-to application building on it.
+This is `squirrel`, a command-line front-end to the Squirrel data access
+infrastructure. The Squirrel infrastructure offers meta-data caching, blazingly
+fast data lookup for large datasets and transparent online data download to all
+application building on it.
 
-In most cases, the Squirrel can operate discretely under the hood, without
-requiring any human interaction or awareness. However, with this tool, some
+In most cases, the Squirrel does its business discretely under the hood and
+does not require human interaction or awareness. However, using this tool, some
 aspects can be configured for the benefit of greater performance or
-convenience, including:
+convenience, including (1) using a separate (isolated, local) environment for a
+specific project, (2) using named selections to speed up access to very large
+datasets, (3), pre-scanning/indexing of file collections. It can also be used
+to inspect various aspects of a data collection.
 
-* using a separate (local) environment for a specific project.
-* using named selections to speed up access to very large datasets.
-* pre-scanning/indexing files.
-''')
+This tool's functionality is available through several subcommands. Run
+`squirrel [subcommand] --help` to get help further help. ''')
 
     parser.add_argument(
         '--help', '-h',
@@ -52,7 +53,7 @@ convenience, including:
         help='Set logger level. Default: %(default)s')
 
     subparsers = parser.add_subparsers(
-        title='subcommands')
+        title='Subcommands')
 
     for mod in command_modules:
         subparser = mod.setup(subparsers)
