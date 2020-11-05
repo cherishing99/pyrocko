@@ -217,6 +217,7 @@ class SquirrelTestCase(unittest.TestCase):
             return io.save(trs, op.join(tempdir, 'traces_%(station)s.mseed'))
 
         database = squirrel.Database()
+
         sq = squirrel.Squirrel(database=database)
 
         assert sq.get_nfiles() == 0
@@ -236,8 +237,7 @@ class SquirrelTestCase(unittest.TestCase):
         sq.print_tables(stream=f)
         database.print_tables(stream=f)
 
-        time.sleep(2.0)  # make sure modification time is different
-
+        time.sleep(1.1)  # make sure modification time is different
         fns = make_files(1)
         sq.add(fns, check=False)
         assert sq.get_nfiles() == 2
@@ -263,9 +263,9 @@ class SquirrelTestCase(unittest.TestCase):
             ('', '', '00', '', '', ''), ('', '', '01', '', '', '')]
         assert list(sq.iter_kinds()) == ['waveform']
 
-        assert len(sq.get_nuts('waveform', tmin=-10., tmax=10.)) == 2
         assert len(sq.get_nuts('waveform', tmin=0., tmax=1.)) == 0
         assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 2
+        assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 0
 
         shutil.rmtree(tempdir)
 
@@ -278,13 +278,26 @@ class SquirrelTestCase(unittest.TestCase):
 
         assert len(sq.get_nuts('waveform', tmin=-10., tmax=10.)) == 0
 
+        time.sleep(1.1)  # make sure modification time is different
         fns = make_files(2)
         sq.add(fns)
         assert sq.get_nfiles() == 2
         assert sq.get_nnuts() == 2
+
+        time.sleep(1.1)  # make sure modification time is different
+        fns = make_files(3)
+        assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 0
+        assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 2
+        assert len(sq.get_nuts('waveform', tmin=3., tmax=4.)) == 0
+        sq.reload()
+        assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 0
+        assert len(sq.get_nuts('waveform', tmin=3., tmax=4.)) == 2
+        assert len(sq.get_nuts('waveform', tmin=4., tmax=5.)) == 0
+
         sq.remove(fns)
         assert sq.get_nfiles() == 0
         assert sq.get_nnuts() == 0
+
 
     def benchmark_chop(self):
         bench = self.test_chop(100000, ne=10)

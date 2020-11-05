@@ -207,11 +207,22 @@ class Waveform(Content):
     deltat = Float.T(optional=True)
 
     data = Array.T(
+        optional=True,
         shape=(None,),
-        dtype=num.float32,
-        serialize_as='base64',
-        serialize_dtype=num.dtype('<f4'),
+        serialize_as='base64+meta',
         help='numpy array with data samples')
+
+    def pyrocko_trace(self):
+        from pyrocko import trace
+        return trace.Trace(
+            network=self.network,
+            station=self.station,
+            location=self.location,
+            channel=self.channel,
+            tmin=self.tmin,
+            tmax=self.tmax,
+            deltat=self.deltat,
+            ydata=self.data)
 
     @property
     def codes(self):
@@ -511,7 +522,8 @@ class Nut(Object):
             values_nocheck=None):
 
         if values_nocheck is not None:
-            (self.file_path, self.file_format, self.file_mtime, self.file_size,
+            (self.file_path, self.file_format, self.file_mtime,
+             self.file_size,
              self.file_segment, self.file_element,
              self.kind_id, self.codes,
              self.tmin_seconds, self.tmin_offset,
@@ -659,6 +671,24 @@ class Nut(Object):
             time=self.tmin,
             duration=(self.tmax - self.tmin) or None)
 
+    @property
+    def trace_kwargs(self):
+        agency, network, station, location, channel, extra = \
+            self.codes.split(separator)
+
+        return dict(
+            network=network,
+            station=station,
+            location=location,
+            channel=channel,
+            tmin=self.tmin,
+            tmax=self.tmax,
+            deltat=self.deltat)
+
+    @property
+    def dummy_trace(self):
+        return DummyTrace(self)
+
 
 def make_waveform_nut(
         agency='', network='', station='', location='', channel='', extra='',
@@ -738,6 +768,48 @@ def group_channels(nuts):
         group.add(nut.codes[4])
 
     return by_ansl
+
+
+class DummyTrace(object):
+
+    def __init__(self, nut):
+        self.nut = nut
+        self._nslc = None
+
+    @property
+    def tmin(self):
+        return self.nut.tmin
+
+    @property
+    def tmax(self):
+        return self.nut.tmax
+
+    @property
+    def deltat(self):
+        return self.nut.deltat
+
+    @property
+    def nslc_id(self):
+        if self._nslc is None:
+            self._nslc = self.nut.codes_tuple[1:5]
+
+        return self._nslc
+
+    @property
+    def network(self):
+        return self.nslc_id[0]
+
+    @property
+    def station(self):
+        return self.nslc_id[1]
+
+    @property
+    def location(self):
+        return self.nslc_id[2]
+
+    @property
+    def channel(self):
+        return self.nslc_id[3]
 
 
 __all__ = [

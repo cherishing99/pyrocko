@@ -430,7 +430,7 @@ class FDSNSource(Source):
         if os.path.exists(fn):
             sub_squirrel.add([fn], check=False)
 
-        nuts = sub_squirrel.get_nuts(
+        nuts = sub_squirrel.iter_nuts(
             'channel', constraint.tmin, constraint.tmax)
 
         file_path = self._source_id

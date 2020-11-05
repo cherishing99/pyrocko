@@ -18,9 +18,9 @@ from pyrocko.io_common import FileLoadError
 from pyrocko.guts import Object, Int, List, Tuple, String, Timestamp, Dict
 from pyrocko import util
 
-from . import model, io
+from . import model, io, cache
 
-from .model import to_kind_ids, to_kind_id, to_kind, separator, WaveformOrder
+from .model import to_kind_id, to_kind, separator, WaveformOrder
 from .client import fdsn, catalog
 from . import client, environment, error
 
@@ -186,7 +186,8 @@ class Selection(object):
                 CREATE TABLE IF NOT EXISTS %(db)s.%(file_states)s (
                     file_id integer PRIMARY KEY,
                     file_state integer,
-                    kind_mask integer)
+                    kind_mask integer,
+                    format text)
             ''')))
 
         self._conn.execute(self._sql(
@@ -261,7 +262,12 @@ class Selection(object):
             # self._conn.execute('ROLLBACK')
             raise
 
-    def add(self, file_paths, kind_mask=model.g_kind_mask_all):
+    def add(
+            self,
+            file_paths,
+            kind_mask=model.g_kind_mask_all,
+            format='detect'):
+
         '''
         Add files to the selection.
 
@@ -291,17 +297,17 @@ class Selection(object):
                             SELECT files.file_id
                                 FROM files
                                 WHERE files.path == ? )
-                            AND kind_mask != ?
+                            AND kind_mask != ? OR format != ?
                     '''), (
-                        (path, kind_mask) for path in file_paths))
+                        (path, kind_mask, format) for path in file_paths))
 
                 self._conn.executemany(self._sql(
                     '''
                         INSERT OR IGNORE INTO %(db)s.%(file_states)s
-                        SELECT files.file_id, 0, ?
+                        SELECT files.file_id, 0, ?, ?
                         FROM files
                         WHERE files.path = ?
-                    '''), ((kind_mask, path) for path in file_paths))
+                    '''), ((kind_mask, format, path) for path in file_paths))
 
                 self._conn.executemany(self._sql(
                     '''
@@ -344,17 +350,17 @@ class Selection(object):
                         FROM temp.%(bulkinsert)s
                         INNER JOIN files
                         ON temp.%(bulkinsert)s.path == files.path)
-                    AND kind_mask != ?
-            '''), (kind_mask,))
+                    AND kind_mask != ? OR format != ?
+            '''), (kind_mask, format))
 
         self._conn.execute(self._sql(
             '''
                 INSERT OR IGNORE INTO %(db)s.%(file_states)s
-                SELECT files.file_id, 0, ?
+                SELECT files.file_id, 0, ?, ?
                 FROM temp.%(bulkinsert)s
                 INNER JOIN files
                 ON temp.%(bulkinsert)s.path == files.path
-            '''), (kind_mask,))
+            '''), (kind_mask, format))
 
         self._conn.execute(self._sql(
             '''
@@ -390,7 +396,7 @@ class Selection(object):
                      WHERE files.path == ?)
             '''), ((path,) for path in file_paths))
 
-    def set_file_states_known(self):
+    def _set_file_states_known(self):
         '''
         Set file states to "known" (2).
         '''
@@ -401,18 +407,27 @@ class Selection(object):
                 WHERE file_state < 2
             '''))
 
+    def _set_file_states_force_check(self):
+        '''
+        Set file states to "known" (2).
+        '''
+        self._conn.execute(self._sql(
+            '''
+                UPDATE %(db)s.%(file_states)s
+                SET file_state = 1
+            '''))
+
     def undig_grouped(self, skip_unchanged=False):
         '''
         Get content inventory of all files in selection.
 
         :param: skip_unchanged: if ``True`` only inventory of modified files
-            is yielded (:py:class:`flag_modified` must be called beforehand).
+            is yielded (:py:meth:`_flag_modified` must be called beforehand).
 
-        This generator yields tuples ``(path, nuts)`` where ``path`` is the
-        path to the file and ``nuts`` is a list of
-        :py:class:`pyrocko.squirrel.Nut` objects representing the contents of
-        the file.
-        '''
+        This generator yields tuples ``((format, path), nuts)`` where ``path``
+        is the path to the file, ``format`` is the format assignation or
+        ``'detect'`` and ``nuts`` is a list of :py:class:`pyrocko.squirrel.Nut`
+        objects representing the contents of the file. '''
 
         if skip_unchanged:
             where = '''
@@ -423,6 +438,7 @@ class Selection(object):
 
         sql = self._sql('''
             SELECT
+                %(db)s.%(file_states)s.format,
                 files.path,
                 files.format,
                 files.mtime,
@@ -448,19 +464,19 @@ class Selection(object):
         ''')
 
         nuts = []
-        path = None
+        format_path = None
         for values in self._conn.execute(sql):
-            if path is not None and values[0] != path:
-                yield path, nuts
+            if format_path is not None and values[1] != format_path[1]:
+                yield format_path, nuts
                 nuts = []
 
-            if values[1] is not None:
-                nuts.append(model.Nut(values_nocheck=values))
+            if values[2] is not None:
+                nuts.append(model.Nut(values_nocheck=values[1:]))
 
-            path = values[0]
+            format_path = values[:2]
 
-        if path is not None:
-            yield path, nuts
+        if format_path is not None:
+            yield format_path, nuts
 
     def iter_paths(self):
         sql = self._sql('''
@@ -475,7 +491,7 @@ class Selection(object):
         for values in self._conn.execute(sql):
             yield values[0]
 
-    def flag_modified(self, check=True):
+    def _flag_modified(self, check=True):
         '''
         Mark files which have been modified.
 
@@ -656,7 +672,9 @@ class Squirrel(Selection):
 
         Selection.__init__(self, database=database, persistent=persistent)
         c = self._conn
-        self._contents = {}
+        self._content_caches = {
+            'waveform': cache.ContentCache(),
+            'default': cache.ContentCache()}
 
         self._cache_path = cache_path
 
@@ -852,9 +870,16 @@ class Squirrel(Selection):
 
         kind_mask = model.to_kind_mask(kinds)
 
-        Selection.add(self, self.iter_expand_dirs(file_paths), kind_mask)
-        self._load(format, check)
-        self._update_nuts(kinds)
+        Selection.add(
+            self, self.iter_expand_dirs(file_paths), kind_mask, format)
+
+        self._load(check)
+        self._update_nuts()
+
+    def reload(self):
+        self._set_file_states_force_check()
+        self._load(check=True)
+        self._update_nuts()
 
     def add_virtual(self, nuts, virtual_file_paths=None):
         '''
@@ -882,25 +907,16 @@ class Squirrel(Selection):
         self.get_database().dig(nuts_add)
         self._update_nuts()
 
-    def _load(self, format, check):
+    def _load(self, check):
         for _ in io.iload(
                 self,
                 content=[],
                 skip_unchanged=True,
-                format=format,
                 check=check):
             pass
 
-    def _update_nuts(self, kinds=None):
-        c = self._conn
-        w_kinds = ''
-        args = []
-        if kinds is not None:
-            w_kinds = 'AND kind_codes.kind_id IN (%s)' % ', '.join(
-                '?'*len(kinds))
-            args.extend(to_kind_ids(kinds))
-
-        c.execute(self._sql(
+    def _update_nuts(self):
+        self._conn.execute(self._sql(
             '''
                 INSERT INTO %(db)s.%(nuts)s
                 SELECT NULL,
@@ -916,9 +932,11 @@ class Squirrel(Selection):
                     ON nuts.kind_codes_id ==
                        kind_codes.kind_codes_id
                 WHERE %(db)s.%(file_states)s.file_state != 2
-            ''' + w_kinds), args)
+                    AND (((1 << kind_codes.kind_id)
+                        & %(db)s.%(file_states)s.kind_mask) != 0)
+            '''))
 
-        self.set_file_states_known()
+        self._set_file_states_known()
 
     def add_source(self, source):
         '''
@@ -1319,7 +1337,7 @@ class Squirrel(Selection):
 
         Complexity: O(1), independent of number of nuts
 
-        :returns: sorted list of available codes
+        :returns: sorted list of available codes as tuples of strings
         '''
         return sorted(list(self.iter_codes(kind=kind)))
 
@@ -1422,7 +1440,7 @@ class Squirrel(Selection):
             tmin=tmin,
             tmax=tmax)
 
-    def get_content(self, nut):
+    def get_content(self, nut, cache='default'):
         '''
         Get and possibly load full content for a given index entry from file.
 
@@ -1432,20 +1450,33 @@ class Squirrel(Selection):
         cached in the squirrel object.
         '''
 
-        if nut.key not in self._contents:
+        content_cache = self._content_caches[cache]
+        if not content_cache.has(nut):
             for nut_loaded in io.iload(
                     nut.file_path,
                     segment=nut.file_segment,
                     format=nut.file_format,
                     database=self._database):
 
-                self._contents[nut_loaded.key] = nut_loaded.content
+                content_cache.put(nut_loaded)
 
-        if nut.key not in self._contents:
+        try:
+            return content_cache.get(nut)
+        except KeyError:
             raise error.NotAvailable(
                 'Unable to retrieve content: %s, %s, %s, %s' % nut.key)
 
-        return self._contents[nut.key]
+    def advance_accessor(self, accessor, cache=None):
+        for cache_ in (
+                self._content_caches.keys() if cache is None else [cache]):
+
+            self._content_caches[cache_].advance_accessor(accessor)
+
+    def clear_accessor(self, accessor, cache=None):
+        for cache_ in (
+                self._content_caches.keys() if cache is None else [cache]):
+
+            self._content_caches[cache_].clear_accessor(accessor)
 
     def check_duplicates(self, nuts):
         d = defaultdict(list)
@@ -1512,9 +1543,10 @@ class Squirrel(Selection):
 
         orders_noop, orders = lpick(lambda order: order.gaps, orders)
         order_keys_noop = set(order_key(order) for order in orders_noop)
-        logger.info(
-            'Waveform orders already satisified with cached/local data: %i '
-            '(%i)' % (len(order_keys_noop), len(orders_noop)))
+        if len(order_keys_noop) != 0 or len(orders_noop) != 0:
+            logger.info(
+                'Waveform orders already satisified with cached/local data: '
+                '%i (%i)' % (len(order_keys_noop), len(orders_noop)))
 
         source_ids = []
         sources = {}
@@ -1533,9 +1565,10 @@ class Squirrel(Selection):
             order_group.sort(
                 key=lambda order: source_priority[order.source_id])
 
-        logger.info(
-            'Waveform orders standing for download: %i (%i)'
-            % (len(order_groups), len(orders)))
+        if len(order_groups) != 0 or len(orders) != 0:
+            logger.info(
+                'Waveform orders standing for download: %i (%i)'
+                % (len(order_groups), len(orders)))
 
         def release_order_group(order):
             del order_groups[order_key(order)]
@@ -1583,12 +1616,16 @@ class Squirrel(Selection):
 
         # split promises
 
-    def get_waveforms(self, *args, **kwargs):
+    def get_waveform_nuts(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
         self._redeem_promises(*args)
-        nuts = list(self.iter_nuts('waveform', *args))
+        return sorted(
+            self.iter_nuts('waveform', *args), key=lambda nut: nut.dkey)
+
+    def get_waveforms(self, *args, **kwargs):
+        nuts = self.get_waveform_nuts(*args, **kwargs)
         # self.check_duplicates(nuts)
-        return sorted(self.get_content(nut) for nut in nuts)
+        return [self.get_content(nut, 'waveform') for nut in nuts]
 
     def get_pyrocko_stations(self, *args, **kwargs):
         from pyrocko import model as pmodel
@@ -1775,7 +1812,7 @@ class Database(object):
         c.execute(self._register_table(
             '''
                 CREATE TABLE IF NOT EXISTS nuts (
-                    nut_id integer PRIMARY KEY,
+                    nut_id integer PRIMARY KEY AUTOINCREMENT,
                     file_id integer,
                     file_segment integer,
                     file_element integer,
@@ -1998,7 +2035,7 @@ class Database(object):
     def undig_many(self, file_paths):
         selection = self.new_selection(file_paths)
 
-        for path, nuts in selection.undig_grouped():
+        for (_, path), nuts in selection.undig_grouped():
             yield path, nuts
 
         del selection

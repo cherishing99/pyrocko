@@ -125,7 +125,10 @@ def iload(
         :py:class:`pyrocko.squirrel.Selection` object
     :param str segment: file-specific segment identifier (con only be used
         when loading from a single file.
-    :param str format: file format identifier or ``'detect'`` for autodetection
+    :param str format: file format identifier or ``'detect'`` for
+        autodetection. When loading from a selection, per-file format
+        assignation is taken from the hint in the selection and this flag is
+        ignored.
     :param database: database to use for meta-information caching
     :type database: :py:class:`pyrocko.squirrel.Database`
     :param bool check: if ``True``, investigate modification time and file
@@ -183,16 +186,16 @@ def iload(
             selection = temp_selection
 
         if skip_unchanged:
-            selection.flag_modified(check)
+            selection._flag_modified(check)
             it = selection.undig_grouped(skip_unchanged=True)
         else:
             it = selection.undig_grouped()
 
     else:
-        it = ((path, []) for path in paths)
+        it = (((format, path), []) for path in paths)
 
     n_files = 0
-    for path, old_nuts in it:
+    for (format, path), old_nuts in it:
         n_files += 1
         if database and commit and n_files % 1000 == 0:
             database.commit()
