@@ -1,23 +1,70 @@
 
 import logging
-from pyrocko import squirrel, trace
+import weakref
+from pyrocko import squirrel as psq, trace
 
 logger = logging.getLogger('pyrocko.squirrel.pile')
 
 
-def trace_selector_to_nut_selector(trace_selector):
-    if trace_selector is None:
+def trace_callback_to_nut_callback(trace_callback):
+    if trace_callback is None:
         return None
 
-    def nut_selector(nut):
-        return trace_selector(nut.dummy_trace)
+    def nut_callback(nut):
+        return trace_callback(nut.dummy_trace)
 
-    return nut_selector
+    return nut_callback
+
+
+class CodesDummyTrace(object):
+    def __init__(self, codes):
+        self.network, self.station, self.location, self.channel \
+            = self.nslc_id \
+            = codes[1:5]
+
+
+def trace_callback_to_codes_callback(trace_callback):
+    if trace_callback is None:
+        return None
+
+    def codes_callback(codes):
+        return trace_callback(CodesDummyTrace(codes))
+
+    return codes_callback
 
 
 class Pile(object):
-    def __init__(self):
-        self._squirrel = squirrel.Squirrel()
+    def __init__(self, squirrel=None):
+        if squirrel is None:
+            squirrel = psq.Squirrel()
+
+        self._squirrel = squirrel
+        self._listeners = []
+
+    def add_listener(self, obj):
+        self._listeners.append(weakref.ref(obj))
+
+    def notify_listeners(self, what):
+        for ref in self._listeners:
+            obj = ref()
+            if obj:
+                obj.pile_changed(what)
+
+    def get_tmin(self):
+        return self.tmin
+
+    def get_tmax(self):
+        return self.tmax
+
+    def get_deltatmin(self):
+        return 0.0005
+
+    def get_deltatmax(self):
+        return 1.0
+
+    @property
+    def deltatmax(self):
+        return self.get_deltatmax()
 
     @property
     def tmin(self):
@@ -74,7 +121,9 @@ class Pile(object):
 
         if load_data:
             traces = [
-                self._squirrel.get_content(nut, accessor_id).pyrocko_trace()
+                self._squirrel.get_content(
+                    nut, 'waveform', accessor_id).pyrocko_trace()
+
                 for nut in nuts if nut_selector is None or nut_selector(nut)]
 
         else:
@@ -141,7 +190,7 @@ class Pile(object):
     def chopper(
             self,
             tmin=None, tmax=None, tinc=None, tpad=0.,
-            trace_selector=None,
+            group_selector=None, trace_selector=None,
             want_incomplete=True, degap=True, maxgap=5, maxlap=None,
             keep_current_files_open=False, accessor_id='default',
             snap=(round, round), include_last=False, load_data=True):
@@ -156,6 +205,7 @@ class Pile(object):
             ``tmax-tmin``)
         :param tpad: padding time appended on either side of the data windows
             (window overlap is ``2*tpad``)
+        :param group_selector: ignored in squirrel-based pile
         :param trace_selector: filter callback taking
             :py:class:`pyrocko.trace.Trace` objects
         :param want_incomplete: if set to ``False``, gappy/incomplete traces
@@ -200,7 +250,7 @@ class Pile(object):
         if not self.is_relevant(tmin-tpad, tmax+tpad):
             return
 
-        nut_selector = trace_selector_to_nut_selector(trace_selector)
+        nut_selector = trace_callback_to_nut_callback(trace_selector)
         iwin = 0
         while True:
             chopped = []
@@ -227,9 +277,70 @@ class Pile(object):
     def reload_modified(self):
         self._squirrel.reload()
 
-    def iter_traces(self):
+    def iter_traces(
+            self,
+            load_data=False,
+            return_abspath=False,
+            group_selector=None,
+            trace_selector=None):
+
+        '''Iterate over all traces in pile.
+
+        :param load_data: whether to load the waveform data, by default empty
+            traces are yielded
+        :param return_abspath: if ``True`` yield tuples containing absolute
+            file path and :py:class:`pyrocko.trace.Trace` objects
+        :param group_selector: filter callback taking :py:class:`TracesGroup`
+            objects
+        :param trace_selector: filter callback taking
+            :py:class:`pyrocko.trace.Trace` objects
+
+        Example; yields only traces, where the station code is 'HH1'::
+
+            test_pile = pile.make_pile('/local/test_trace_directory')
+            for t in test_pile.iter_traces(
+                    trace_selector=lambda tr: tr.station=='HH1'):
+
+                print t
+        '''
+        assert not load_data
+        assert not return_abspath
+
+        nut_selector = trace_callback_to_nut_callback(trace_selector)
+
         for nut in self._squirrel.get_waveform_nuts():
-            yield trace.Trace(**nut.trace_kwargs)
+            if nut_selector is None or nut_selector(nut):
+                yield trace.Trace(**nut.trace_kwargs)
+
+    def gather_keys(self, gather, selector=None):
+        codes_gather = trace_callback_to_codes_callback(gather)
+        codes_selector = trace_callback_to_codes_callback(selector)
+        return self._squirrel.gather_codes_keys(
+            'waveform', codes_gather, codes_selector)
+
+    def snuffle(self, **kwargs):
+        '''Visualize it.
+
+        :param stations: list of `pyrocko.model.Station` objects or ``None``
+        :param events: list of `pyrocko.model.Event` objects or ``None``
+        :param markers: list of `pyrocko.gui_util.Marker` objects or ``None``
+        :param ntracks: float, number of tracks to be shown initially
+            (default: 12)
+        :param follow: time interval (in seconds) for real time follow mode or
+            ``None``
+        :param controls: bool, whether to show the main controls (default:
+            ``True``)
+        :param opengl: bool, whether to use opengl (default: ``False``)
+        '''
+
+        from pyrocko.gui.snuffler import snuffle
+        snuffle(self, **kwargs)
+
+    def is_empty(self):
+        return 'waveform' not in self._squirrel.get_kinds()
+
+    def get_update_count(self):
+        return 0
 
 
 def get_cache(_):

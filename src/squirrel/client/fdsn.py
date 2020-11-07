@@ -84,7 +84,7 @@ class MSeedArchive(Archive):
 
     def add(self, trs):
         path = op.join(self._base_path, self.template)
-        return io.save(trs, path, overwrite=False)
+        return io.save(trs, path, overwrite=True)
 
 
 def combine_selections(selection):

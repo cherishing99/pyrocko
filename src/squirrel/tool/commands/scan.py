@@ -5,7 +5,6 @@
 
 from __future__ import absolute_import, print_function
 
-from pyrocko import squirrel as sq
 from .. import common
 
 

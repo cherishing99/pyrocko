@@ -689,6 +689,17 @@ class Nut(Object):
     def dummy_trace(self):
         return DummyTrace(self)
 
+    @property
+    def codes_tuple(self):
+        return tuple(self.codes.split(separator))
+
+    def oneline(self):
+        return '%s, %s, %s - %s' % (
+            to_kind(self.kind_id),
+            '.'.join(self.codes.split(separator)),
+            util.time_to_str(self.tmin),
+            util.time_to_str(self.tmax))
+
 
 def make_waveform_nut(
         agency='', network='', station='', location='', channel='', extra='',
@@ -810,6 +821,10 @@ class DummyTrace(object):
     @property
     def channel(self):
         return self.nslc_id[3]
+
+    def overlaps(self, tmin, tmax):
+        return not (tmax < self.nut.tmin or self.nut.tmax < tmin)
+
 
 
 __all__ = [

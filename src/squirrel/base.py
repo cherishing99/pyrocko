@@ -22,11 +22,47 @@ from . import model, io, cache
 
 from .model import to_kind_id, to_kind, separator, WaveformOrder
 from .client import fdsn, catalog
-from . import client, environment, error
+from . import client, environment, error, pile
 
 logger = logging.getLogger('pyrocko.squirrel.base')
 
 guts_prefix = 'pf'
+
+# TODO remove debugging stuff
+# from matplotlib import pyplot as plt
+#
+# class SFig(object):
+#     def __init__(self):
+#         self.line = 0
+#
+#     def draw(self, eles, color='black'):
+#         if not isinstance(eles, list):
+#             eles = [eles]
+#
+#         for ele in eles:
+#             plt.plot(
+#                 [ele.tmin, ele.tmax],
+#                 [self.line, self.line], color=color, alpha=0.5)
+#             plt.plot(
+#                 [ele.tmin, ele.tmax],
+#                 [self.line, self.line], 'o', color=color, alpha=0.5, ms=2)
+#
+#     def draw_span(self, tmin, tmax, color='orange'):
+#         plt.plot(
+#             [tmin, tmax],
+#             [self.line, self.line], color=color)
+#
+#     def next(self):
+#         self.line += 1
+#
+#     def show(self):
+#         plt.show()
+#
+#     def set_tspan(self, tmin, tmax):
+#         plt.xlim(tmin, tmax)
+#
+#
+# f = SFig()
 
 
 def lpick(condition, seq):
@@ -112,12 +148,18 @@ def blocks(tmin, tmax, deltat, nsamples_block=100000):
 def gaps(avail, tmin, tmax):
     assert tmin < tmax
 
+    # f.next()
+    # f.draw_span(tmin, tmax, 'purple')
+    # f.next()
+
     data = [(tmax, 1), (tmin, -1)]
     for (tmin_a, tmax_a) in avail:
+        # f.draw_span(tmin_a, tmax_a, 'cyan')
         assert tmin_a < tmax_a
-        data.append((tmin, 1))
-        data.append((tmax, -1))
+        data.append((tmin_a, 1))
+        data.append((tmax_a, -1))
 
+    # f.next()
     data.sort()
     s = 1
     gaps = []
@@ -132,6 +174,10 @@ def gaps(avail, tmin, tmax):
 
         s += x
 
+    # for tmin, tmax in gaps:
+    #     f.draw_span(tmin, tmax, 'pink')
+    #
+    # f.next()
     return gaps
 
 
@@ -677,6 +723,8 @@ class Squirrel(Selection):
             'default': cache.ContentCache()}
 
         self._cache_path = cache_path
+
+        self._pile = None
 
         self._names.update({
             'nuts': self.name + '_nuts',
@@ -1440,7 +1488,7 @@ class Squirrel(Selection):
             tmin=tmin,
             tmax=tmax)
 
-    def get_content(self, nut, cache='default'):
+    def get_content(self, nut, cache='default', accessor='default'):
         '''
         Get and possibly load full content for a given index entry from file.
 
@@ -1461,7 +1509,7 @@ class Squirrel(Selection):
                 content_cache.put(nut_loaded)
 
         try:
-            return content_cache.get(nut)
+            return content_cache.get(nut, accessor)
         except KeyError:
             raise error.NotAvailable(
                 'Unable to retrieve content: %s, %s, %s, %s' % nut.key)
@@ -1512,10 +1560,17 @@ class Squirrel(Selection):
 
     def _redeem_promises(self, *args):
 
+        tmin, tmax, _ = args
+        # f.draw_span(tmin, tmax)
+        # f.next()
+
         waveforms = list(self.iter_nuts('waveform', *args))
         promises = list(self.iter_nuts('waveform_promise', *args))
+        # f.draw(waveforms, 'red')
+        # f.draw(promises, 'gray')
+        #
+        # f.next()
 
-        tmin, tmax, _ = args
         codes_to_avail = defaultdict(list)
         for nut in waveforms:
             codes_to_avail[nut.codes].append((nut.tmin, nut.tmax+nut.deltat))
@@ -1531,7 +1586,11 @@ class Squirrel(Selection):
         orders = []
         for promise in promises:
             waveforms_avail = codes_to_avail[promise.codes]
-            for block_tmin, block_tmax in blocks(tmin, tmax, promise.deltat):
+            for block_tmin, block_tmax in blocks(
+                    max(tmin, promise.tmin),
+                    min(tmax, promise.tmax),
+                    promise.deltat):
+
                 orders.append(
                     WaveformOrder(
                         source_id=promise.file_path,
@@ -1542,6 +1601,10 @@ class Squirrel(Selection):
                         gaps=gaps(waveforms_avail, block_tmin, block_tmax)))
 
         orders_noop, orders = lpick(lambda order: order.gaps, orders)
+        # f.draw(orders_noop, 'green')
+        # f.draw(orders, 'blue')
+        # f.next()
+
         order_keys_noop = set(order_key(order) for order in orders_noop)
         if len(order_keys_noop) != 0 or len(orders_noop) != 0:
             logger.info(
@@ -1584,6 +1647,7 @@ class Squirrel(Selection):
             pass
 
         def success(order):
+            # f.draw(order, 'black')
             release_order_group(order)
             split_promise(order)
 
@@ -1614,7 +1678,7 @@ class Squirrel(Selection):
                     error_permanent=split_promise,
                     error_temporary=noop)
 
-        # split promises
+        # f.next()
 
     def get_waveform_nuts(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
@@ -1680,6 +1744,22 @@ class Squirrel(Selection):
     def get_pyrocko_events(self, *args, **kwargs):
         from pyrocko import model as pmodel  # noqa
         return self.get_events(*args, **kwargs)
+
+    @property
+    def pile(self):
+        if self._pile is None:
+            self._pile = pile.Pile(self)
+
+        return self._pile
+
+    def snuffle(self):
+        self.pile.snuffle()
+
+    def gather_codes_keys(self, kind, gather, selector):
+        return set(
+            gather(codes)
+            for codes in self.iter_codes(kind)
+            if selector is None or selector(codes))
 
     def __str__(self):
         return str(self.get_stats())
