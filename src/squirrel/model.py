@@ -826,7 +826,6 @@ class DummyTrace(object):
         return not (tmax < self.nut.tmin or self.nut.tmax < tmin)
 
 
-
 __all__ = [
     'to_kind',
     'to_kinds',
