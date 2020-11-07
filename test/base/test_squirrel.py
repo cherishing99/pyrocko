@@ -298,7 +298,6 @@ class SquirrelTestCase(unittest.TestCase):
         assert sq.get_nfiles() == 0
         assert sq.get_nnuts() == 0
 
-
     def benchmark_chop(self):
         bench = self.test_chop(100000, ne=10)
         print(bench)
