@@ -397,7 +397,7 @@ class SquirrelTestCase(unittest.TestCase):
         return bench
 
     def benchmark_loading(self):
-        bench = self.test_loading(hours=24)
+        bench = self.test_loading(hours=24, with_pile=True)
         print(bench)
 
     def test_loading(self, with_pile=False, hours=1):
@@ -408,7 +408,7 @@ class SquirrelTestCase(unittest.TestCase):
 
         fns = sorted(util.select_files([dir], show_progress=False))
 
-        bench = common.Benchmark('test_load')
+        bench = common.Benchmark('test_loading (%i files)' % len(fns))
         if with_pile:
             cachedirname = tempfile.mkdtemp('testcache')
 
@@ -474,7 +474,7 @@ class SquirrelTestCase(unittest.TestCase):
 
             assert ii == len(fns)
 
-        sel.set_file_states_known()
+        sel._set_file_states_known()
 
         with bench.run('iload, skip unchanged, files are known and unchanged'):
             ii = 0
