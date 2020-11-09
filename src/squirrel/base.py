@@ -1020,13 +1020,6 @@ class Squirrel(Selection):
             tmax = tmax if tmax is not None else obj.tmax
             codes = codes if codes is not None else obj.codes
 
-        tmin_avail, tmax_avail = self.get_time_span()
-        if tmin is None:
-            tmin = tmin_avail
-
-        if tmax is None:
-            tmax = tmax_avail
-
         if isinstance(codes, str):
             codes = tuple(codes.split('.'))
 
@@ -1034,17 +1027,31 @@ class Squirrel(Selection):
 
     def iter_nuts(self, kind=None, tmin=None, tmax=None, codes=None):
         '''
-        Iterate content intersecting with the half open interval [tmin, tmax[.
+        Iterate content matching given contraints.
 
         :param kind: ``str``, content kind to extract or sequence of such
         :param tmin: timestamp, start time of interval
         :param tmax: timestamp, end time of interval
         :param codes: tuple of str, pattern of content codes to be matched
 
-        Complexity: O(log N)
+        Complexity: O(log N) for the time selection part due to heavy use of
+        database indexes.
 
         Yields :py:class:`pyrocko.squirrel.Nut` objects representing the
         intersecting content.
+
+        Query time span is treated as a half-open interval ``[tmin, tmax)``.
+        However, if ``tmin`` equals ``tmax``, the edge logics are modified to
+        closed-interval so that content intersecting with the time instant ``t
+        = tmin = tmax`` is returned (otherwise nothing would be returned as
+        ``[t, t)`` never matches anything).
+
+        Content time spans are also treated as half open intervals, e.g.
+        content span ``[0, 1)`` is matched by query span ``[0, 1)`` but not by
+        ``[-1, 0)`` or ``[1, 2)``. Also here, logics are modified to
+        closed-interval when the content time span is an empty interval, i.e.
+        to indicate a time instant. E.g. time instant 0 is matched by
+        ``[0, 1)`` but not by ``[-1, 0)`` or ``[1, 2)``.
         '''
 
         if not isinstance(kind, str):
@@ -1140,11 +1147,31 @@ class Squirrel(Selection):
             sql += ''' WHERE ''' + ' AND '.join(cond)
 
         sql = self._sql(sql)
-
-        for row in self._conn.execute(sql, args):
-            nut = model.Nut(values_nocheck=row)
-            if tmin is None or (nut.tmin < tmax and tmin < nut.tmax):
+        if tmin is None and tmax is None:
+            for row in self._conn.execute(sql, args):
+                nut = model.Nut(values_nocheck=row)
                 yield nut
+        else:
+            if tmin is None:
+                tmin = self.get_time_span()[0] - 1.
+            if tmax is None:
+                tmax = self.get_time_span()[1] + 1.
+
+            if tmin == tmax:
+                for row in self._conn.execute(sql, args):
+                    nut = model.Nut(values_nocheck=row)
+                    if (nut.tmin <= tmin < nut.tmax) \
+                            or (nut.tmin == nut.tmax and tmin == nut.tmin):
+
+                        yield nut
+            else:
+                for row in self._conn.execute(sql, args):
+                    nut = model.Nut(values_nocheck=row)
+                    if (tmin < nut.tmax and nut.tmin < tmax) \
+                            or (nut.tmin == nut.tmax
+                                and tmin <= nut.tmin < tmax):
+
+                        yield nut
 
     def get_nuts(self, *args, **kwargs):
         return list(self.iter_nuts(*args, **kwargs))

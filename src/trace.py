@@ -140,6 +140,16 @@ class Trace(Object):
                 s += '  %s: %s\n' % (k, self.meta[k])
         return s
 
+    @property
+    def oneline(self):
+        fmt = min(9, max(0, -int(math.floor(math.log10(self.deltat)))))
+        s = '%s, %s, %s, %g' % (
+            '.'.join(self.nslc_id),
+            util.time_to_str(self.tmin, format=fmt),
+            util.time_to_str(self.tmax, format=fmt),
+            self.deltat)
+        return s
+
     def __getstate__(self):
         return (self.network, self.station, self.location, self.channel,
                 self.tmin, self.tmax, self.deltat, self.mtime,

@@ -216,87 +216,156 @@ class SquirrelTestCase(unittest.TestCase):
 
             return io.save(trs, op.join(tempdir, 'traces_%(station)s.mseed'))
 
-        database = squirrel.Database()
+        try:
+            database = squirrel.Database()
 
+            sq = squirrel.Squirrel(database=database)
+
+            assert sq.get_nfiles() == 0
+            assert sq.get_nnuts() == 0
+
+            fns = make_files(0)
+            sq.add(fns)
+            assert sq.get_nfiles() == 2
+            assert sq.get_nnuts() == 2
+            sq.add(fns)
+            assert sq.get_nfiles() == 2
+            assert sq.get_nnuts() == 2
+
+            assert sq.get_time_span() == (0., 1.)
+
+            f = StringIO()
+            sq.print_tables(stream=f)
+            database.print_tables(stream=f)
+
+            time.sleep(1.1)  # make sure modification time is different
+            fns = make_files(1)
+            sq.add(fns, check=False)
+            assert sq.get_nfiles() == 2
+            assert sq.get_nnuts() == 2
+
+            assert sorted(sq.get_codes()) == [
+                ('', '', '00', '', '', ''), ('', '', '01', '', '', '')]
+            assert list(sq.iter_kinds()) == ['waveform']
+
+            assert len(sq.get_nuts('waveform', tmin=-10., tmax=10.)) == 2
+            assert len(sq.get_nuts('waveform', tmin=-1., tmax=0.)) == 0
+            assert len(sq.get_nuts('waveform', tmin=0., tmax=1.)) == 2
+            assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 0
+            assert len(sq.get_nuts('waveform', tmin=-1., tmax=0.5)) == 2
+            assert len(sq.get_nuts('waveform', tmin=0.5, tmax=1.5)) == 2
+            assert len(sq.get_nuts('waveform', tmin=0.2, tmax=0.7)) == 2
+
+            sq.add(fns, check=True)
+            assert sq.get_nfiles() == 2
+            assert sq.get_nnuts() == 2
+
+            assert sorted(sq.get_codes()) == [
+                ('', '', '00', '', '', ''), ('', '', '01', '', '', '')]
+            assert list(sq.iter_kinds()) == ['waveform']
+
+            assert len(sq.get_nuts('waveform', tmin=0., tmax=1.)) == 0
+            assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 2
+            assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 0
+
+            shutil.rmtree(tempdir)
+
+            sq.add(fns, check=True)
+            assert sq.get_nfiles() == 2
+            assert sq.get_nnuts() == 0
+
+            assert list(sq.iter_codes()) == []
+            assert list(sq.iter_kinds()) == []
+
+            assert len(sq.get_nuts('waveform', tmin=-10., tmax=10.)) == 0
+
+            time.sleep(1.1)  # make sure modification time is different
+            fns = make_files(2)
+            sq.add(fns)
+            assert sq.get_nfiles() == 2
+            assert sq.get_nnuts() == 2
+
+            time.sleep(1.1)  # make sure modification time is different
+            fns = make_files(3)
+            assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 0
+            assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 2
+            assert len(sq.get_nuts('waveform', tmin=3., tmax=4.)) == 0
+            sq.reload()
+            assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 0
+            assert len(sq.get_nuts('waveform', tmin=3., tmax=4.)) == 2
+            assert len(sq.get_nuts('waveform', tmin=4., tmax=5.)) == 0
+
+            sq.remove(fns)
+            assert sq.get_nfiles() == 0
+            assert sq.get_nnuts() == 0
+
+        finally:
+            shutil.rmtree(tempdir)
+
+    def test_chop_suey(self):
+        tmin_t = util.stt('2000-01-01 00:00:00')
+        tmin_e = util.stt('2001-01-01 00:00:00')
+
+        nt = 3
+        nf = 10
+        deltat = 0.5
+
+        ne = 2
+
+        all_nuts = []
+        for it in range(nt):
+            path = 'virtual:test_chop_suey_%i' % it
+            tmin = tmin_t + (it*nf) * deltat
+            tmax = tmin_t + ((it+1)*nf) * deltat
+            tmin_seconds, tmin_offset = squirrel.model.tsplit(tmin)
+            tmax_seconds, tmax_offset = squirrel.model.tsplit(tmax)
+            all_nuts.append(squirrel.Nut(
+                file_path=path,
+                file_format='virtual',
+                tmin_seconds=tmin_seconds,
+                tmin_offset=tmin_offset,
+                tmax_seconds=tmax_seconds,
+                tmax_offset=tmax_offset,
+                deltat=deltat,
+                kind_id=squirrel.to_kind_id('undefined')))
+
+        for ie in range(ne):
+            path = 'virtual:test_chop_suey_%i' % (nt+ie)
+            tmin = tmax = tmin_e + nt*nf*deltat + ie*deltat
+            tmin_seconds, tmin_offset = squirrel.model.tsplit(tmin)
+            tmax_seconds, tmax_offset = squirrel.model.tsplit(tmax)
+            all_nuts.append(squirrel.Nut(
+                file_path=path,
+                file_format='virtual',
+                tmin_seconds=tmin_seconds,
+                tmin_offset=tmin_offset,
+                tmax_seconds=tmax_seconds,
+                tmax_offset=tmax_offset,
+                kind_id=squirrel.to_kind_id('undefined')))
+
+        squirrel.io.backends.virtual.add_nuts(all_nuts)
+        database = squirrel.Database()
         sq = squirrel.Squirrel(database=database)
 
-        assert sq.get_nfiles() == 0
-        assert sq.get_nnuts() == 0
+        sq.add(
+            ('virtual:test_chop_suey_%i' % it for it in range(nt+ne)),
+            check=False)
 
-        fns = make_files(0)
-        sq.add(fns)
-        assert sq.get_nfiles() == 2
-        assert sq.get_nnuts() == 2
-        sq.add(fns)
-        assert sq.get_nfiles() == 2
-        assert sq.get_nnuts() == 2
+        for it in range(-1, nt+1):
+            tmin = tmin_t + (it*nf) * deltat
+            tmax = tmin_t + ((it+1)*nf) * deltat
+            # open - open
+            assert len(sq.get_nuts(tmin=tmin, tmax=tmax)) == int(0 <= it < nt)
+            # closed - open
+            assert len(sq.get_nuts(tmin=tmin, tmax=tmin)) == int(0 <= it < nt)
 
-        assert sq.get_time_span() == (0., 1.)
-
-        f = StringIO()
-        sq.print_tables(stream=f)
-        database.print_tables(stream=f)
-
-        time.sleep(1.1)  # make sure modification time is different
-        fns = make_files(1)
-        sq.add(fns, check=False)
-        assert sq.get_nfiles() == 2
-        assert sq.get_nnuts() == 2
-
-        assert sorted(sq.get_codes()) == [
-            ('', '', '00', '', '', ''), ('', '', '01', '', '', '')]
-        assert list(sq.iter_kinds()) == ['waveform']
-
-        assert len(sq.get_nuts('waveform', tmin=-10., tmax=10.)) == 2
-        assert len(sq.get_nuts('waveform', tmin=-1., tmax=0.)) == 0
-        assert len(sq.get_nuts('waveform', tmin=0., tmax=1.)) == 2
-        assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 0
-        assert len(sq.get_nuts('waveform', tmin=-1., tmax=0.5)) == 2
-        assert len(sq.get_nuts('waveform', tmin=0.5, tmax=1.5)) == 2
-        assert len(sq.get_nuts('waveform', tmin=0.2, tmax=0.7)) == 2
-
-        sq.add(fns, check=True)
-        assert sq.get_nfiles() == 2
-        assert sq.get_nnuts() == 2
-
-        assert sorted(sq.get_codes()) == [
-            ('', '', '00', '', '', ''), ('', '', '01', '', '', '')]
-        assert list(sq.iter_kinds()) == ['waveform']
-
-        assert len(sq.get_nuts('waveform', tmin=0., tmax=1.)) == 0
-        assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 2
-        assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 0
-
-        shutil.rmtree(tempdir)
-
-        sq.add(fns, check=True)
-        assert sq.get_nfiles() == 2
-        assert sq.get_nnuts() == 0
-
-        assert list(sq.iter_codes()) == []
-        assert list(sq.iter_kinds()) == []
-
-        assert len(sq.get_nuts('waveform', tmin=-10., tmax=10.)) == 0
-
-        time.sleep(1.1)  # make sure modification time is different
-        fns = make_files(2)
-        sq.add(fns)
-        assert sq.get_nfiles() == 2
-        assert sq.get_nnuts() == 2
-
-        time.sleep(1.1)  # make sure modification time is different
-        fns = make_files(3)
-        assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 0
-        assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 2
-        assert len(sq.get_nuts('waveform', tmin=3., tmax=4.)) == 0
-        sq.reload()
-        assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 0
-        assert len(sq.get_nuts('waveform', tmin=3., tmax=4.)) == 2
-        assert len(sq.get_nuts('waveform', tmin=4., tmax=5.)) == 0
-
-        sq.remove(fns)
-        assert sq.get_nfiles() == 0
-        assert sq.get_nnuts() == 0
+        for ie in range(-1, ne+1):
+            tmin = tmin_e + nt*nf*deltat + ie*deltat
+            tmax = tmin_e + nt*nf*deltat + (ie+1)*deltat
+            # open - closed
+            assert len(sq.get_nuts(tmin=tmin, tmax=tmax)) == int(0 <= ie < ne)
+            # closed - closed
+            assert len(sq.get_nuts(tmin=tmin, tmax=tmin)) == int(0 <= ie < ne)
 
     def benchmark_chop(self):
         bench = self.test_chop(100000, ne=10)
@@ -313,7 +382,7 @@ class SquirrelTestCase(unittest.TestCase):
 
         all_nuts = []
         for it in range(nt):
-            path = 'virtual:file_%i' % it
+            path = 'virtual:test_chop_%i' % it
             tmin = txs[it]
             tmax = txs[it+1]
             tmin_seconds, tmin_offset = squirrel.model.tsplit(tmin)
@@ -358,7 +427,7 @@ class SquirrelTestCase(unittest.TestCase):
         with bench.run('add to squirrel'):
             sq = squirrel.Squirrel(database=database)
             sq.add(
-                ('virtual:file_%i' % it for it in range(nt)),
+                ('virtual:test_chop_%i' % it for it in range(nt)),
                 check=False)
 
         with bench.run('get time span'):
@@ -558,12 +627,26 @@ class SquirrelTestCase(unittest.TestCase):
 
     def test_fdsn_source(self):
         tmin = util.str_to_time('2018-01-01 00:00:00')
-        tmax = util.str_to_time('2018-01-02 00:00:00')
+        tmax = util.str_to_time('2018-01-01 01:00:00')
         database = squirrel.Database()
         sq = squirrel.Squirrel(database=database)
-        sq.add_fdsn('geofon', dict(network='GE'))
-        sq.update(tmin=tmin, tmax=tmax)
-        sq.update_waveform_inventory(tmin=tmin, tmax=tmax)
+        try:
+            tempdir = os.path.join(self.tempdir, 'test_fdsn_source')
+            sq.add_fdsn(
+                'geofon', dict(network='GE', station='EIL', channel='LH?'),
+                cache_path=tempdir)
+
+            sq.update(tmin=tmin, tmax=tmax)
+            sq.update_waveform_inventory(tmin=tmin, tmax=tmax)
+            for trs in sq.pile.chopper(
+                    tmin=tmin, tmax=tmax, include_last=True):
+
+                assert len(trs) == 3
+                for tr in trs:
+                    assert tr.tmin == tmin
+                    assert tr.tmax == tmax
+        finally:
+            shutil.rmtree(tempdir)
 
     def test_events(self):
         fpath = common.test_data_file('events.txt')
@@ -571,17 +654,26 @@ class SquirrelTestCase(unittest.TestCase):
         sq = squirrel.Squirrel(database=database)
         sq.add(fpath)
 
-    # def test_catalog_source(self):
-    #     tmin = util.str_to_time('2017-01-01 00:00:00')
-    #     tmax = util.str_to_time('2018-02-01 00:00:00')
-    #     tmax2 = util.str_to_time('2018-03-01 00:00:00')
-    #     database = squirrel.Database()
-    #     sq = squirrel.Squirrel(database=database)
-    #     sq.add_catalog('geofon')
-    #     sq.update(tmin=tmin, tmax=tmax)
-    #     sq.update(tmin=tmin, tmax=tmax2)
+    def test_catalog_source(self):
+        util.setup_logging('test_squirrel', 'info')
+        tmin = util.str_to_time('2017-01-01 00:00:00')
+        tmax = util.str_to_time('2017-01-03 00:00:00')
+        tmax2 = util.str_to_time('2017-01-06 00:00:00')
+
+        database = squirrel.Database()
+        database = None
+        try:
+            tempdir = os.path.join(self.tempdir, 'test_catalog')
+            sq = squirrel.Squirrel(database=database)
+            sq.add_catalog(
+                'geofon', cache_path=tempdir, query_args={'magmin': 6.0})
+            sq.update(tmin=tmin, tmax=tmax)
+            sq.update(tmin=tmin, tmax=tmax2)
+            assert(len(sq.get_events()) == 2)
+
+        finally:
+            shutil.rmtree(tempdir)
 
 
 if __name__ == "__main__":
-    util.setup_logging('test_squirrel', 'info')
     unittest.main()

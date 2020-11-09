@@ -693,6 +693,7 @@ class Nut(Object):
     def codes_tuple(self):
         return tuple(self.codes.split(separator))
 
+    @property
     def oneline(self):
         return '%s, %s, %s - %s' % (
             to_kind(self.kind_id),

@@ -365,6 +365,15 @@ class Event(Location):
 
         return '\n'.join(s)
 
+    @property
+    def oneline(self):
+        return '%s, %s, %s, %s' % (
+            self.name,
+            util.time_to_str(self.time),
+            '%-3s %3.1f' % (self.magnitude_type or '    ', self.magnitude)
+            if self.magnitude else 'M   ---',
+            self.region)
+
 
 def detect_format(filename):
     with open(filename, 'r') as f:

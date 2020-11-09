@@ -56,6 +56,11 @@ def add_nuts(nuts):
         data_mtimes[file_path] = old_mtime + 1
 
 
+def remove(file_paths):
+    for file_path in file_paths:
+        del data[file_path]
+
+
 def iload(format, file_path, segment, content):
     assert format == 'virtual'
 

@@ -8,10 +8,12 @@ try:
 except ImportError:
     import pickle
 
-from pyrocko import config, util, guts
+from pyrocko import util
+from pyrocko.guts import String, Dict, Duration, dump_all
 
 from .base import Source
 from ..model import ehash
+from ..lock import LockDir
 
 logger = logging.getLogger('pyrocko.squirrel.client.catalog')
 
@@ -49,125 +51,128 @@ def get_catalog(name):
 
 class CatalogSource(Source):
 
-    def __init__(
-            self, name,
-            query_args=None,
-            expires=None,
-            anxious=None,
-            cache_dir=None):
+    catalog = String.T()
+    query_args = Dict.T(String.T(), String.T(), optional=True)
+    expires = Duration.T(optional=True)
+    anxious = Duration.T(optional=True)
+    cache_path = String.T(optional=True)
 
-        Source.__init__(self)
+    def __init__(self, catalog, query_args=None, **kwargs):
+        Source.__init__(self, catalog=catalog, query_args=query_args, **kwargs)
 
-        self._no_query_age_max = expires
-        self._force_query_age_max = anxious
-        self._query_args = query_args
-        self._cache_dir = cache_dir
-        self._name = name
+        self._hash = self.make_hash()
         self._nevents_query_hint = 1000
         self._nevents_chunk_hint = 5000
         self._tquery = 3600.*24.
         self._tquery_limits = (3600., 3600.*24.*365.)
-        self._catalog = get_catalog(name)
 
-        s = name
-        if query_args is not None:
-            s += ','.join(
-                '%s:%s' % (k, query_args[k])
-                for k in sorted(query_args.keys()))
+    def setup(self, squirrel):
+        self._force_query_age_max = self.anxious
+        self._catalog = get_catalog(self.catalog)
 
-        self._query_args = query_args
-
-        self._hash = ehash(s)
-        self._cache_dir = op.join(
-            cache_dir or config.config().cache_dir,
+        self._cache_path = op.join(
+            self.cache_path or squirrel._cache_path,
             'catalog',
-            self._hash)
+            self.get_hash())
 
-        util.ensuredir(self._cache_dir)
+        util.ensuredir(self._cache_path)
+
+    def make_hash(self):
+        s = self.catalog
+        if self.query_args is not None:
+            s += ','.join(
+                '%s:%s' % (k, self.query_args[k])
+                for k in sorted(self.query_args.keys()))
+        else:
+            s += 'noqueryargs'
+
+        return ehash(s)
+
+    def get_hash(self):
+        return self._hash
 
     def update_event_inventory(self, squirrel, constraint=None):
-        print('todo lock cache')
-        self._load_chain()
 
-        assert constraint is not None
-        if constraint is not None:
-            tmin, tmax = constraint.tmin, constraint.tmax
+        with LockDir(self._cache_path):
+            self._load_chain()
 
-        tmin_sq, tmax_sq = squirrel.get_time_span()
+            assert constraint is not None
+            if constraint is not None:
+                tmin, tmax = constraint.tmin, constraint.tmax
 
-        if tmin is None:
-            tmin = tmin_sq
+            tmin_sq, tmax_sq = squirrel.get_time_span()
 
-        if tmax is None:
-            tmax = tmax_sq
+            if tmin is None:
+                tmin = tmin_sq
 
-        if tmin is None or tmax is None:
-            logger.warn(
-                'Cannot query catalog source "%s" without time constraint. '
-                'Could not determine appropriate time constraint from current '
-                'data holdings (no data?).'
-                % self._name)
+            if tmax is None:
+                tmax = tmax_sq
 
-            return
+            if tmin is None or tmax is None:
+                logger.warn(
+                    'Cannot query catalog source "%s" without time '
+                    'constraint. Could not determine appropriate time '
+                    'constraint from current data holdings (no data?).'
+                    % self.catalog)
 
-        if tmin >= tmax:
-            return
+                return
 
-        tnow = time.time()
-        modified = False
+            if tmin >= tmax:
+                return
 
-        if not self._chain:
-            self._chain = [Link(tmin, tmax, tnow)]
-            modified = True
-        else:
-            if tmin < self._chain[0].tmin:
-                self._chain[0:0] = [Link(tmin, self._chain[0].tmin, tnow)]
+            tnow = time.time()
+            modified = False
+
+            if not self._chain:
+                self._chain = [Link(tmin, tmax, tnow)]
                 modified = True
-            if self._chain[-1].tmax < tmax:
-                self._chain.append(Link(self._chain[-1].tmax, tmax, tnow))
-                modified = True
-
-        chain = []
-        remove = []
-        for link in self._chain:
-            if tmin < link.tmax and link.tmin < tmax \
-                    and self._outdated(link, tnow):
-
-                if link.content_id:
-                    remove.append(self._get_events_file_path(link.content_id))
-
-                tmin_query = max(link.tmin, tmin)
-                tmax_query = min(link.tmax, tmax)
-
-                if link.tmin < tmin_query:
-                    chain.append(Link(link.tmin, tmin_query, tnow))
-
-                if tmin_query < tmax_query:
-                    for link in self._iquery(tmin_query, tmax_query, tnow):
-                        print(link)
-                        chain.append(link)
-
-                if tmax_query < link.tmax:
-                    chain.append(Link(tmax_query, link.tmax, tnow))
-
-                modified = True
-
             else:
-                chain.append(link)
+                if tmin < self._chain[0].tmin:
+                    self._chain[0:0] = [Link(tmin, self._chain[0].tmin, tnow)]
+                    modified = True
+                if self._chain[-1].tmax < tmax:
+                    self._chain.append(Link(self._chain[-1].tmax, tmax, tnow))
+                    modified = True
 
-        if modified:
-            self._chain = chain
-            self._dump_chain()
-            squirrel.remove(remove)
+            chain = []
+            remove = []
+            for link in self._chain:
+                if tmin < link.tmax and link.tmin < tmax \
+                        and self._outdated(link, tnow):
 
-        add = []
-        for link in self._chain:
-            if link.content_id:
-                add.append(self._get_events_file_path(link.content_id))
+                    if link.content_id:
+                        remove.append(
+                            self._get_events_file_path(link.content_id))
 
-        squirrel.add(add, kinds=['event'], format='yaml')
+                    tmin_query = max(link.tmin, tmin)
+                    tmax_query = min(link.tmax, tmax)
 
-        print('todo unlock cache')
+                    if link.tmin < tmin_query:
+                        chain.append(Link(link.tmin, tmin_query, tnow))
+
+                    if tmin_query < tmax_query:
+                        for link in self._iquery(tmin_query, tmax_query, tnow):
+                            chain.append(link)
+
+                    if tmax_query < link.tmax:
+                        chain.append(Link(tmax_query, link.tmax, tnow))
+
+                    modified = True
+
+                else:
+                    chain.append(link)
+
+            if modified:
+                self._chain = chain
+                self._dump_chain()
+                squirrel.remove(remove)
+
+            add = []
+            for link in self._chain:
+                if link.content_id:
+                    add.append(self._get_events_file_path(link.content_id))
+
+            squirrel.add(add, kinds=['event'], format='yaml')
 
     def _iquery(self, tmin, tmax, tmodified):
 
@@ -225,9 +230,9 @@ class CatalogSource(Source):
     def _pack(self, events, tmin, tmax, tmodified):
         if events:
             content_id = ehash(
-                self._hash + ' %r %r %r' % (tmin, tmax, tmodified))
+                self.get_hash() + ' %r %r %r' % (tmin, tmax, tmodified))
             path = self._get_events_file_path(content_id)
-            guts.dump_all(events, filename=path)
+            dump_all(events, filename=path)
         else:
             content_id = None
 
@@ -235,11 +240,11 @@ class CatalogSource(Source):
 
     def _query(self, tmin, tmax):
         logger.info('Querying catalog "%s" for time span %s - %s.' % (
-            self._name, util.tts(tmin), util.tts(tmax)))
+            self.catalog, util.tts(tmin), util.tts(tmax)))
 
         return self._catalog.get_events(
             (tmin, tmax),
-            **(self._query_args or {}))
+            **(self.query_args or {}))
 
     def _outdated(self, link, tnow):
         if link.nevents == -1:
@@ -250,18 +255,18 @@ class CatalogSource(Source):
 
             return True
 
-        if self._no_query_age_max is not None \
-                and link.tmodified < tnow - self._no_query_age_max:
+        if self.expires is not None \
+                and link.tmodified < tnow - self.expires:
 
             return True
 
         return False
 
     def _get_events_file_path(self, fhash):
-        return op.join(self._cache_dir, fhash + '.pf')
+        return op.join(self._cache_path, fhash + '.pf')
 
     def _get_chain_file_path(self):
-        return op.join(self._cache_dir, 'chain.pickle')
+        return op.join(self._cache_path, 'chain.pickle')
 
     def _load_chain(self):
         path = self._get_chain_file_path()
@@ -270,10 +275,6 @@ class CatalogSource(Source):
                 self._chain = pickle.load(f)
         else:
             self._chain = []
-
-        print('chain:')
-        for link in self._chain:
-            print(link)
 
     def _dump_chain(self):
         with open(self._get_chain_file_path(), 'wb') as f:
