@@ -630,6 +630,7 @@ class SquirrelTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(tempdir)
 
+    @common.require_internet
     def test_fdsn_source(self):
         util.setup_logging('test_squirrel', 'info')
         tmin = util.str_to_time('2018-01-01 00:00:00')
@@ -709,6 +710,7 @@ class SquirrelTestCase(unittest.TestCase):
         events2 = pmodel.load_events(fpath)
         assert len(events) == len(events2)
 
+    @common.require_internet
     def test_catalog_source(self):
         util.setup_logging('test_squirrel', 'info')
         tmin = util.str_to_time('2017-01-01 00:00:00')
@@ -716,7 +718,6 @@ class SquirrelTestCase(unittest.TestCase):
         tmax2 = util.str_to_time('2017-01-06 00:00:00')
 
         database = squirrel.Database()
-        database = None
         try:
             tempdir = os.path.join(self.tempdir, 'test_catalog')
             sq = squirrel.Squirrel(database=database)
@@ -728,6 +729,54 @@ class SquirrelTestCase(unittest.TestCase):
 
         finally:
             shutil.rmtree(tempdir)
+
+    def test_fake_pile(self):
+        database = squirrel.Database()
+        sq = squirrel.Squirrel(database=database)
+        assert(len(list(sq.pile.chopper())) == 0)
+        assert sq.pile.tmin is None
+        assert sq.pile.tmax is None
+        assert sq.pile.get_tmin() is None
+        assert sq.pile.get_tmax() is None
+        assert not sq.pile.is_relevant(0., 1.)
+        assert sq.pile.is_empty()
+
+        fpath = common.test_data_file('test1.mseed')
+        sq.pile.load_files(fpath)
+
+        assert not sq.pile.is_empty()
+
+        assert sq.pile.tmin is not None
+        assert sq.pile.tmax is not None
+        assert sq.pile.get_tmin() is not None
+        assert sq.pile.get_tmax() is not None
+
+        assert list(sq.pile.networks) == ['']
+        assert list(sq.pile.networks) == ['']
+        assert list(sq.pile.stations) == ['LGG01']
+        assert list(sq.pile.locations) == ['']
+        assert list(sq.pile.channels) == ['BHZ']
+
+        assert len(list(sq.pile.chopper())[0]) == 1
+        assert len(list(sq.pile.chopper(want_incomplete=False))[0]) == 1
+        assert len(list(sq.pile.chopper(load_data=False))[0]) == 1
+
+        tmin, tmax = sq.pile.tmin, sq.pile.tmax
+        assert len(list(sq.pile.chopper(
+            tmin=tmin-10., tmax=tmax+10, want_incomplete=False))[0]) == 0
+        assert len(list(sq.pile.chopper(
+            tmin=0., tmax=10.))) == 0
+        assert len(list(sq.pile.chopper(
+            tmin=tmin-10., tmax=tmax+10, want_incomplete=False))[0]) == 0
+        assert len(list(sq.pile.chopper(
+            tmin=tmin+10., tmax=tmax-10, want_incomplete=False))[0]) == 1
+
+        assert len(list(sq.pile.iter_traces())) == 1
+        sq.pile.reload_modified()
+
+        assert list(sq.pile.gather_keys(
+            gather=lambda tr: tr.station,
+            selector=lambda tr: tr.channel == 'BHZ')) == ['LGG01']
 
 
 if __name__ == "__main__":

@@ -57,9 +57,13 @@ class Pile(object):
         return self.tmax
 
     def get_deltatmin(self):
+        # TODO: implement
+        print('Dummy value returned from get_deltatmin (not implemented).')
         return 0.0005
 
     def get_deltatmax(self):
+        # TODO: implement
+        print('Dummy value returned from get_deltatmax (not implemented).')
         return 1.0
 
     @property
