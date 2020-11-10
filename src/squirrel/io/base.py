@@ -260,7 +260,7 @@ def iload(
                 database.dig(nuts)
 
         except FileLoadError:
-            logger.error('an error occured while reading file: %s' % path)
+            logger.error('An error occured while reading file: %s' % path)
             if database:
                 database.reset(path)
 

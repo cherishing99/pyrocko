@@ -11,7 +11,7 @@ from collections import defaultdict
 import numpy as num
 
 from .. import common
-from pyrocko import squirrel, util, pile, io, trace
+from pyrocko import squirrel, util, pile, io, trace, model as pmodel
 try:
     from StringIO import StringIO
 except ImportError:
@@ -29,7 +29,7 @@ class SquirrelTestCase(unittest.TestCase):
         ('test2.stationxml', 'stationxml'),
         ('test1.stations', 'pyrocko_stations'),
         ('test1.cube', 'datacube'),
-        ('events.txt', 'pyrocko_events')]
+        ('events2.txt', 'pyrocko_events')]
 
     @classmethod
     def setUpClass(cls):
@@ -63,7 +63,7 @@ class SquirrelTestCase(unittest.TestCase):
             for nut in squirrel.iload(fpath, content=[]):
                 ii += 1
 
-        assert ii == 5811
+        assert ii == 399
 
         ii = 0
         database = squirrel.Database()
@@ -72,7 +72,7 @@ class SquirrelTestCase(unittest.TestCase):
             for nut in squirrel.iload(fpath, content=[], database=database):
                 ii += 1
 
-        assert ii == 5811
+        assert ii == 399
 
         ii = 0
         for (fn, _) in SquirrelTestCase.test_files:
@@ -86,7 +86,7 @@ class SquirrelTestCase(unittest.TestCase):
             for nut in squirrel.iload(fpath, database=database):
                 ii += 1
 
-        assert ii == 5811
+        assert ii == 399
 
         fpaths = [
             common.test_data_file(fn)
@@ -96,7 +96,7 @@ class SquirrelTestCase(unittest.TestCase):
         for nut in squirrel.iload(fpaths, content=[], database=database):
             ii += 1
 
-        assert ii == 5811
+        assert ii == 399
 
         fpath = op.join(self.tempdir, 'emptyfile')
         with open(fpath, 'wb'):
@@ -117,7 +117,7 @@ class SquirrelTestCase(unittest.TestCase):
         for kinds in [None, 'waveform', ['station', 'channel']]:
             for persistent in [None, 'my_selection1', 'my_selection2']:
                 sq = squirrel.Squirrel(database=db_path, persistent=persistent)
-                for (fn, format) in SquirrelTestCase.test_files:
+                for (fn, format) in SquirrelTestCase.test_files[:]:
                     fpath = common.test_data_file(fn)
                     sq.add(fpath, kinds=kinds)
 
@@ -223,6 +223,7 @@ class SquirrelTestCase(unittest.TestCase):
 
             assert sq.get_nfiles() == 0
             assert sq.get_nnuts() == 0
+            assert sq.get_total_size() == 0
 
             fns = make_files(0)
             sq.add(fns)
@@ -450,8 +451,8 @@ class SquirrelTestCase(unittest.TestCase):
                 tmax = tmin_g + (iwin+1) * tinc
 
                 expect.append(
-                    len(list(sq._iter_nuts_naiv(
-                        'undefined', tmin=tmin, tmax=tmax))))
+                    len(list(sq.iter_nuts(
+                        'undefined', tmin=tmin, tmax=tmax, naiv=True))))
                 assert expect[-1] >= 10
 
         with bench.run('undig span'):
@@ -509,6 +510,10 @@ class SquirrelTestCase(unittest.TestCase):
         if os.path.exists(db_file_path):
             os.unlink(db_file_path)
         database = squirrel.Database(db_file_path)
+        s = database.get_stats()
+        assert s.nfiles == 0
+        assert s.nnuts == 0
+        assert s.kinds == []
 
         with bench.run('iload, with db'):
             ii = 0
@@ -626,33 +631,83 @@ class SquirrelTestCase(unittest.TestCase):
             shutil.rmtree(tempdir)
 
     def test_fdsn_source(self):
+        util.setup_logging('test_squirrel', 'info')
         tmin = util.str_to_time('2018-01-01 00:00:00')
-        tmax = util.str_to_time('2018-01-01 01:00:00')
+        tmax = util.str_to_time('2018-01-01 02:00:00')
         database = squirrel.Database()
-        sq = squirrel.Squirrel(database=database)
         try:
+            sq = squirrel.Squirrel(database=database)
             tempdir = os.path.join(self.tempdir, 'test_fdsn_source')
             sq.add_fdsn(
-                'geofon', dict(network='GE', station='EIL', channel='LH?'),
+                'geofon',
+                dict(
+                    network='GE',
+                    station='EIL,BOAB,PUL',
+                    channel='LH?'),
                 cache_path=tempdir)
 
             sq.update(tmin=tmin, tmax=tmax)
+
+            assert len(sq.get_stations()) == 3
+            assert len(sq.get_channels()) == 9
+
             sq.update_waveform_inventory(tmin=tmin, tmax=tmax)
             for trs in sq.pile.chopper(
-                    tmin=tmin, tmax=tmax, include_last=True):
+                    tmin=tmin, tmax=tmax, include_last=True,
+                    trace_selector=lambda tr: tr.station == 'EIL'):
 
                 assert len(trs) == 3
                 for tr in trs:
                     assert tr.tmin == tmin
                     assert tr.tmax == tmax
+
+            sq = squirrel.Squirrel(database=database)
+            sq.add_fdsn(
+                'geofon',
+                dict(
+                    network='GE',
+                    station='EIL,BOAB,PUL',
+                    channel='LH?'),
+                expires=1000.,
+                cache_path=tempdir)
+
+            assert(sq.get_nnuts() == 10)
+            sq.update(tmin=tmin, tmax=tmax)
+            assert(sq.get_nnuts() == 22)
+
+            sq = squirrel.Squirrel(database=database)
+            sq.add_fdsn(
+                'geofon',
+                dict(
+                    network='GE',
+                    station='EIL,BOAB,PUL',
+                    channel='LH?'),
+                expires=0.,
+                cache_path=tempdir)
+
+            assert(sq.get_nnuts() == 10)
+            sq.update(tmin=tmin, tmax=tmax)
+            assert(sq.get_nnuts() == 22)
+
         finally:
             shutil.rmtree(tempdir)
 
-    def test_events(self):
-        fpath = common.test_data_file('events.txt')
+    def test_stations(self):
+        fpath = common.test_data_file('test1.stationxml')
         database = squirrel.Database()
         sq = squirrel.Squirrel(database=database)
         sq.add(fpath)
+        stations = sq.get_pyrocko_stations()
+        assert len(stations) == 2
+
+    def test_events(self):
+        fpath = common.test_data_file('events2.txt')
+        database = squirrel.Database()
+        sq = squirrel.Squirrel(database=database)
+        sq.add(fpath)
+        events = sq.get_events()
+        events2 = pmodel.load_events(fpath)
+        assert len(events) == len(events2)
 
     def test_catalog_source(self):
         util.setup_logging('test_squirrel', 'info')

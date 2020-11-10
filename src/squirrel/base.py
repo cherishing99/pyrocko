@@ -280,12 +280,11 @@ class Selection(object):
         Useful to prolong validity period of data with expiration date.
         '''
 
-        # sql = 'BEGIN TRANSACTION'
-        # self._conn.execute(sql)
-        try:
+        c = self._conn
+        with c:
 
             sql = 'SELECT format, size FROM files WHERE path = ?'
-            fmt, size = execute_get1(self._conn, sql, (file_path,))
+            fmt, size = execute_get1(c, sql, (file_path,))
 
             mod = io.get_backend(fmt)
             mod.touch(file_path)
@@ -301,12 +300,7 @@ class Selection(object):
                 SET mtime = ?
                 WHERE path = ?
             '''
-            self._conn.execute(sql, (file_stats[0], file_path))
-            self._conn.commit()
-
-        except FileLoadError:
-            # self._conn.execute('ROLLBACK')
-            raise
+            c.execute(sql, (file_stats[0], file_path))
 
     def add(
             self,
@@ -793,10 +787,11 @@ class Squirrel(Selection):
                 END
             '''))
 
+        # trigger only on size to make silent update of mtime possible
         c.execute(self._sql(
             '''
                 CREATE TRIGGER IF NOT EXISTS %(db)s.%(nuts)s_delete_nuts2
-                BEFORE UPDATE ON main.files FOR EACH ROW
+                BEFORE UPDATE OF size ON main.files FOR EACH ROW
                 BEGIN
                   DELETE FROM %(nuts)s WHERE file_id == old.file_id;
                 END
@@ -1025,7 +1020,9 @@ class Squirrel(Selection):
 
         return tmin, tmax, codes
 
-    def iter_nuts(self, kind=None, tmin=None, tmax=None, codes=None):
+    def iter_nuts(
+            self, kind=None, tmin=None, tmax=None, codes=None, naiv=False):
+
         '''
         Iterate content matching given contraints.
 
@@ -1072,34 +1069,37 @@ class Squirrel(Selection):
             if tmin is None:
                 tmin = self.get_time_span()[0]
             if tmax is None:
-                tmax = self.get_time_span()[1]
+                tmax = self.get_time_span()[1] + 1.0
 
             tmin_seconds, tmin_offset = model.tsplit(tmin)
             tmax_seconds, tmax_offset = model.tsplit(tmax)
+            if naiv:
+                extra_cond.append('%(db)s.%(nuts)s.tmin_seconds <= ?')
+                args.append(tmax_seconds)
+            else:
+                tscale_edges = model.tscale_edges
 
-            tscale_edges = model.tscale_edges
+                for kscale in range(tscale_edges.size + 1):
+                    if kscale != tscale_edges.size:
+                        tscale = int(tscale_edges[kscale])
+                        tmin_cond.append('''
+                            (%(db)s.%(nuts)s.kind_id = ?
+                             AND %(db)s.%(nuts)s.kscale == ?
+                             AND %(db)s.%(nuts)s.tmin_seconds BETWEEN ? AND ?)
+                        ''')
+                        args.extend(
+                            (to_kind_id(kind), kscale,
+                             tmin_seconds - tscale - 1, tmax_seconds + 1))
 
-            for kscale in range(tscale_edges.size + 1):
-                if kscale != tscale_edges.size:
-                    tscale = int(tscale_edges[kscale])
-                    tmin_cond.append('''
-                        (%(db)s.%(nuts)s.kind_id = ?
-                            AND %(db)s.%(nuts)s.kscale == ?
-                            AND %(db)s.%(nuts)s.tmin_seconds BETWEEN ? AND ?)
-                    ''')
-                    args.extend(
-                        (to_kind_id(kind), kscale,
-                         tmin_seconds - tscale - 1, tmax_seconds + 1))
+                    else:
+                        tmin_cond.append('''
+                            (%(db)s.%(nuts)s.kind_id == ?
+                             AND %(db)s.%(nuts)s.kscale == ?
+                             AND %(db)s.%(nuts)s.tmin_seconds <= ?)
+                        ''')
 
-                else:
-                    tmin_cond.append('''
-                        (%(db)s.%(nuts)s.kind_id == ?
-                            AND %(db)s.%(nuts)s.kscale == ?
-                            AND %(db)s.%(nuts)s.tmin_seconds <= ?)
-                    ''')
-
-                    args.extend(
-                        (to_kind_id(kind), kscale, tmax_seconds + 1))
+                        args.extend(
+                            (to_kind_id(kind), kscale, tmax_seconds + 1))
 
             extra_cond.append('%(db)s.%(nuts)s.tmax_seconds >= ?')
             args.append(tmin_seconds)
@@ -1152,11 +1152,7 @@ class Squirrel(Selection):
                 nut = model.Nut(values_nocheck=row)
                 yield nut
         else:
-            if tmin is None:
-                tmin = self.get_time_span()[0] - 1.
-            if tmax is None:
-                tmax = self.get_time_span()[1] + 1.
-
+            assert tmin is not None and tmax is not None
             if tmin == tmax:
                 for row in self._conn.execute(sql, args):
                     nut = model.Nut(values_nocheck=row)
@@ -1175,47 +1171,6 @@ class Squirrel(Selection):
 
     def get_nuts(self, *args, **kwargs):
         return list(self.iter_nuts(*args, **kwargs))
-
-    def _iter_nuts_naiv(self, kind, tmin=None, tmax=None):
-        tmin_seconds, tmin_offset = model.tsplit(tmin)
-        tmax_seconds, tmax_offset = model.tsplit(tmax)
-
-        tmin_avail, tmax_avail = self.get_time_span()
-        if tmin is None:
-            tmin = tmin_avail
-            tmax = tmax_avail
-
-        sql = self._sql('''
-            SELECT
-                files.path,
-                files.format,
-                files.mtime,
-                files.size,
-                %(db)s.%(nuts)s.file_segment,
-                %(db)s.%(nuts)s.file_element,
-                kind_codes.kind_id,
-                kind_codes.codes,
-                %(db)s.%(nuts)s.tmin_seconds,
-                %(db)s.%(nuts)s.tmin_offset,
-                %(db)s.%(nuts)s.tmax_seconds,
-                %(db)s.%(nuts)s.tmax_offset,
-                %(db)s.%(nuts)s.deltat
-            FROM files
-            INNER JOIN %(db)s.%(nuts)s
-                ON files.file_id == %(db)s.%(nuts)s.file_id
-            INNER JOIN kind_codes
-                ON %(db)s.%(nuts)s.kind_codes_id == kind_codes.kind_codes_id
-            WHERE %(db)s.%(nuts)s.kind_id = ?
-                AND %(db)s.%(nuts)s.tmax_seconds >= ?
-                AND %(db)s.%(nuts)s.tmin_seconds <= ?
-        ''')
-
-        for row in self._conn.execute(
-                sql, (to_kind_id(kind), tmin_seconds, tmax_seconds+1)):
-
-            nut = model.Nut(values_nocheck=row)
-            if nut.tmin < tmax and tmin < nut.tmax:
-                yield nut
 
     def split_nuts(
             self, kind, tmin=None, tmax=None, codes=None, file_path=None):
@@ -1496,8 +1451,6 @@ class Squirrel(Selection):
         for row in self._conn.execute(sql):
             return row[0] or 0
 
-        return 0
-
     def get_stats(self):
         '''
         Get statistics on contents available through this selection.
@@ -1768,10 +1721,6 @@ class Squirrel(Selection):
 
         return pstations
 
-    def get_pyrocko_events(self, *args, **kwargs):
-        from pyrocko import model as pmodel  # noqa
-        return self.get_events(*args, **kwargs)
-
     @property
     def pile(self):
         if self._pile is None:
@@ -1872,6 +1821,7 @@ class Database(object):
 
         self._conn.text_factory = str
         self._tables = {}
+
         self._initialize_db()
         self._need_commit = False
         if log_statements:
@@ -1896,120 +1846,127 @@ class Database(object):
         return s
 
     def _initialize_db(self):
-        c = self._conn.cursor()
-        c.execute(
-            '''PRAGMA recursive_triggers = true''')
+        c = self._conn
+        with c:
+            if 1 == len(list(
+                    c.execute(
+                        '''
+                            SELECT name FROM sqlite_master
+                                WHERE type = 'table' AND name = '{files}'
+                        '''))):
+                return
 
-        c.execute(self._register_table(
-            '''
-                CREATE TABLE IF NOT EXISTS files (
-                    file_id integer PRIMARY KEY,
-                    path text,
-                    format text,
-                    mtime float,
-                    size integer)
-            '''))
+            c.execute(
+                '''PRAGMA recursive_triggers = true''')
 
-        c.execute(
-            '''
-                CREATE UNIQUE INDEX IF NOT EXISTS index_files_file_path
-                ON files (path)
-            ''')
+            c.execute(self._register_table(
+                '''
+                    CREATE TABLE IF NOT EXISTS files (
+                        file_id integer PRIMARY KEY,
+                        path text,
+                        format text,
+                        mtime float,
+                        size integer)
+                '''))
 
-        c.execute(self._register_table(
-            '''
-                CREATE TABLE IF NOT EXISTS nuts (
-                    nut_id integer PRIMARY KEY AUTOINCREMENT,
-                    file_id integer,
-                    file_segment integer,
-                    file_element integer,
-                    kind_id integer,
-                    kind_codes_id integer,
-                    tmin_seconds integer,
-                    tmin_offset float,
-                    tmax_seconds integer,
-                    tmax_offset float,
-                    deltat float,
-                    kscale integer)
-            '''))
+            c.execute(
+                '''
+                    CREATE UNIQUE INDEX IF NOT EXISTS index_files_file_path
+                    ON files (path)
+                ''')
 
-        c.execute(
-            '''
-                CREATE UNIQUE INDEX IF NOT EXISTS index_nuts_file_element
-                ON nuts (file_id, file_segment, file_element)
-            ''')
+            c.execute(self._register_table(
+                '''
+                    CREATE TABLE IF NOT EXISTS nuts (
+                        nut_id integer PRIMARY KEY AUTOINCREMENT,
+                        file_id integer,
+                        file_segment integer,
+                        file_element integer,
+                        kind_id integer,
+                        kind_codes_id integer,
+                        tmin_seconds integer,
+                        tmin_offset float,
+                        tmax_seconds integer,
+                        tmax_offset float,
+                        deltat float,
+                        kscale integer)
+                '''))
 
-        c.execute(self._register_table(
-            '''
-                CREATE TABLE IF NOT EXISTS kind_codes (
-                    kind_codes_id integer PRIMARY KEY,
-                    kind_id integer,
-                    codes text)
-            '''))
+            c.execute(
+                '''
+                    CREATE UNIQUE INDEX IF NOT EXISTS index_nuts_file_element
+                    ON nuts (file_id, file_segment, file_element)
+                ''')
 
-        c.execute(
-            '''
-                CREATE UNIQUE INDEX IF NOT EXISTS index_kind_codes
-                ON kind_codes (kind_id, codes)
-            ''')
+            c.execute(self._register_table(
+                '''
+                    CREATE TABLE IF NOT EXISTS kind_codes (
+                        kind_codes_id integer PRIMARY KEY,
+                        kind_id integer,
+                        codes text)
+                '''))
 
-        c.execute(self._register_table(
-            '''
-                CREATE TABLE IF NOT EXISTS kind_codes_count (
-                    kind_codes_id integer PRIMARY KEY,
-                    count integer)
-            '''))
+            c.execute(
+                '''
+                    CREATE UNIQUE INDEX IF NOT EXISTS index_kind_codes
+                    ON kind_codes (kind_id, codes)
+                ''')
 
-        c.execute(
-            '''
-                CREATE INDEX IF NOT EXISTS index_nuts_file_id
-                ON nuts (file_id)
-            ''')
+            c.execute(self._register_table(
+                '''
+                    CREATE TABLE IF NOT EXISTS kind_codes_count (
+                        kind_codes_id integer PRIMARY KEY,
+                        count integer)
+                '''))
 
-        c.execute(
-            '''
-                CREATE TRIGGER IF NOT EXISTS delete_nuts_on_delete_file
-                BEFORE DELETE ON files FOR EACH ROW
-                BEGIN
-                  DELETE FROM nuts where file_id == old.file_id;
-                END
-            ''')
+            c.execute(
+                '''
+                    CREATE INDEX IF NOT EXISTS index_nuts_file_id
+                    ON nuts (file_id)
+                ''')
 
-        c.execute(
-            '''
-                CREATE TRIGGER IF NOT EXISTS delete_nuts_on_update_file
-                BEFORE UPDATE ON files FOR EACH ROW
-                BEGIN
-                  DELETE FROM nuts where file_id == old.file_id;
-                END
-            ''')
+            c.execute(
+                '''
+                    CREATE TRIGGER IF NOT EXISTS delete_nuts_on_delete_file
+                    BEFORE DELETE ON files FOR EACH ROW
+                    BEGIN
+                      DELETE FROM nuts where file_id == old.file_id;
+                    END
+                ''')
 
-        c.execute(
-            '''
-                CREATE TRIGGER IF NOT EXISTS increment_kind_codes
-                BEFORE INSERT ON nuts FOR EACH ROW
-                BEGIN
-                    INSERT OR IGNORE INTO kind_codes_count
-                    VALUES (new.kind_codes_id, 0);
-                    UPDATE kind_codes_count
-                    SET count = count + 1
-                    WHERE new.kind_codes_id == kind_codes_id;
-                END
-            ''')
+            # trigger only on size to make silent update of mtime possible
+            c.execute(
+                '''
+                    CREATE TRIGGER IF NOT EXISTS delete_nuts_on_update_file
+                    BEFORE UPDATE OF size ON files FOR EACH ROW
+                    BEGIN
+                      DELETE FROM nuts where file_id == old.file_id;
+                    END
+                ''')
 
-        c.execute(
-            '''
-                CREATE TRIGGER IF NOT EXISTS decrement_kind_codes
-                BEFORE DELETE ON nuts FOR EACH ROW
-                BEGIN
-                    UPDATE kind_codes_count
-                    SET count = count - 1
-                    WHERE old.kind_codes_id == kind_codes_id;
-                END
-            ''')
+            c.execute(
+                '''
+                    CREATE TRIGGER IF NOT EXISTS increment_kind_codes
+                    BEFORE INSERT ON nuts FOR EACH ROW
+                    BEGIN
+                        INSERT OR IGNORE INTO kind_codes_count
+                        VALUES (new.kind_codes_id, 0);
+                        UPDATE kind_codes_count
+                        SET count = count + 1
+                        WHERE new.kind_codes_id == kind_codes_id;
+                    END
+                ''')
 
-        self._conn.commit()
-        c.close()
+            c.execute(
+                '''
+                    CREATE TRIGGER IF NOT EXISTS decrement_kind_codes
+                    BEFORE DELETE ON nuts FOR EACH ROW
+                    BEGIN
+                        UPDATE kind_codes_count
+                        SET count = count - 1
+                        WHERE old.kind_codes_id == kind_codes_id;
+                    END
+                ''')
 
     def dig(self, nuts):
         '''
@@ -2301,8 +2258,6 @@ class Database(object):
 
         for row in self._conn.execute(sql):
             return row[0] or 0
-
-        return 0
 
     def get_stats(self):
         return DatabaseStats(

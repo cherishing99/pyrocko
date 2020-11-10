@@ -288,9 +288,6 @@ class FDSNSource(Source):
         log_prefix = 'FDSN "%s" waveforms:' % self.site
         logger.info(' '.join((log_prefix,) + args))
 
-    def _str_due(self):
-        return util.time_to_str()
-
     def _str_expires(self, now):
         t = self._get_expiration_time()
         if t is None:
@@ -417,9 +414,7 @@ class FDSNSource(Source):
             return t + self.expires
 
         except OSError:
-            return True
-
-        return None
+            return 0.0
 
     def update_waveform_inventory(self, squirrel, constraint):
         from pyrocko.squirrel import Squirrel
