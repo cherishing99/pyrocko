@@ -1,5 +1,6 @@
 from __future__ import absolute_import, print_function
 
+import sys
 import time
 
 from .get_terminal_size import get_terminal_size
@@ -46,14 +47,14 @@ class TerminalStatusWindow(object):
         self.stop()
 
     def print(self, s):
-        print(s, end='')
+        print(s, end='', file=sys.stderr)
 
     def flush(self):
-        print('', end='', flush=True)
+        print('', end='', flush=True, file=sys.stderr)
 
     def start(self):
         sx, sy = self._terminal_size
-        print()
+        print(file=sys.stderr)
         self.flush()
         self._state = 1
 
@@ -226,7 +227,7 @@ class Progress(object):
         if self._last_update + 0.1 < now or force:
             lines_done, lines = self._lines()
             for line in lines_done:
-                print(line)
+                print(line, file=sys.stderr)
 
             if self._term and self._term.active:
                 self._term.draw(lines)
