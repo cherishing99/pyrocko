@@ -91,11 +91,15 @@ class TerminalStatusWindow(object):
             return
 
         self._terminal_size = get_terminal_size()
+        sx, sy = self._terminal_size
         nlines = len(lines)
         self._resize(nlines)
         self._start_show()
 
         for iline, line in enumerate(lines):
+            if len(line) > sx - 1:
+                line = line[:sx-1]
+
             self.print(ansi_clear_right + line)
             if iline != nlines - 1:
                 self.print(ansi_next_line)
@@ -109,14 +113,16 @@ class TerminalStatusWindow(object):
 
 
 class Task(object):
-    def __init__(self, progress, id, name, n):
+    def __init__(self, progress, id, name, n, state='working'):
         self._id = id
         self._name = name
         self._condition = ''
-        self._i = 0
+        self._ispin = 0
+        self._i = None
         self._n = n
         self._done = False
-        self._state = 'waiting'
+        assert state in ('waiting', 'working')
+        self._state = state
         self._progress = progress
 
     def __call__(self, it):
@@ -124,20 +130,24 @@ class Task(object):
             for i, obj in enumerate(it):
                 self.update(i)
                 yield obj
+        except Exception:
+            self.fail()
 
         finally:
-            self.end()
+            self.done()
 
-    def update(self, i, condition=''):
+    def update(self, i=None, condition=''):
         self._state = 'working'
         self._condition = condition
-        if self._n is not None:
-            i = min(i, self._n)
+        if i is not None:
+            if self._n is not None:
+                i = min(i, self._n)
 
-        self._i = i
+            self._i = i
+
         self._progress._update()
 
-    def end(self, condition=''):
+    def done(self, condition=''):
         if self._state in ('done', 'failed'):
             return
 
@@ -155,7 +165,8 @@ class Task(object):
         if s == 'waiting':
             return ' '
         elif s == 'working':
-            return spinner[self._i % len(spinner)]
+            self._ispin += 1
+            return spinner[self._ispin % len(spinner)]
         elif s == 'done':
             return check
         elif s == 'failed':
@@ -164,7 +175,9 @@ class Task(object):
             return '?'
 
     def _str_progress(self):
-        if self._n is None:
+        if self._i is None:
+            return self._state
+        elif self._n is None:
             return '%i' % self._i
         else:
             return '%i / %i%s' % (
@@ -179,7 +192,8 @@ class Task(object):
             return ''
 
     def _str_bar(self):
-        if self._state == 'working' and self._n is not None:
+        if self._state == 'working' and self._n is not None \
+                and self._i is not None:
             nb = 30
             ib = int(nb * float(self._i) / self._n)
             return ' ' + bar[0] + bar[1] * ib + bar[2] * (nb - ib) + bar[3]

@@ -326,12 +326,15 @@ class Selection(object):
             if len(file_paths) < 100:
                 # short non-iterator file_paths: can do without temp table
 
+                task = self.progress.task('Gathering file names')
                 self._conn.executemany(
                     '''
                         INSERT OR IGNORE INTO files
                         VALUES (NULL, ?, NULL, NULL, NULL)
-                    ''', ((x,) for x in file_paths))
+                    ''', ((x,) for x in task(file_paths)))
 
+                task = self.progress.task('Preparing database', 3)
+                task.update(0, condition='pruning stale information')
                 self._conn.executemany(self._sql(
                     '''
                         DELETE FROM %(db)s.%(file_states)s
@@ -343,6 +346,7 @@ class Selection(object):
                     '''), (
                         (path, kind_mask, format) for path in file_paths))
 
+                task.update(1, condition='adding file names to selection')
                 self._conn.executemany(self._sql(
                     '''
                         INSERT OR IGNORE INTO %(db)s.%(file_states)s
@@ -351,6 +355,7 @@ class Selection(object):
                         WHERE files.path = ?
                     '''), ((kind_mask, format, path) for path in file_paths))
 
+                task.update(2, condition='updating file states')
                 self._conn.executemany(self._sql(
                     '''
                         UPDATE %(db)s.%(file_states)s
@@ -362,12 +367,15 @@ class Selection(object):
                             AND file_state != 0
                     '''), ((path,) for path in file_paths))
 
+                task.update(3)
+                task.done()
+
                 return
 
         except TypeError:
             pass
 
-        task = self.progress.task('getting file names')
+        task = self.progress.task('Gathering file names')
         self._conn.execute(self._sql(
             '''
                 CREATE TEMP TABLE temp.%(bulkinsert)s
@@ -378,6 +386,8 @@ class Selection(object):
             'INSERT INTO temp.%(bulkinsert)s VALUES (?)'),
             ((x,) for x in task(file_paths)))
 
+        task = self.progress.task('Preparing database', 5)
+        task.update(0, condition='adding file names to database')
         self._conn.execute(self._sql(
             '''
                 INSERT OR IGNORE INTO files
@@ -385,6 +395,7 @@ class Selection(object):
                 FROM temp.%(bulkinsert)s
             '''))
 
+        task.update(1, condition='pruning stale information')
         self._conn.execute(self._sql(
             '''
                 DELETE FROM %(db)s.%(file_states)s
@@ -396,6 +407,7 @@ class Selection(object):
                     AND kind_mask != ? OR format != ?
             '''), (kind_mask, format))
 
+        task.update(2, condition='adding file names to selection')
         self._conn.execute(self._sql(
             '''
                 INSERT OR IGNORE INTO %(db)s.%(file_states)s
@@ -405,6 +417,7 @@ class Selection(object):
                 ON temp.%(bulkinsert)s.path == files.path
             '''), (kind_mask, format))
 
+        task.update(3, condition='updating file states')
         self._conn.execute(self._sql(
             '''
                 UPDATE %(db)s.%(file_states)s
@@ -417,8 +430,11 @@ class Selection(object):
                     AND file_state != 0
             '''))
 
+        task.update(4, condition='dropping temporary data')
         self._conn.execute(self._sql(
             'DROP TABLE temp.%(bulkinsert)s'))
+        task.update(5)
+        task.done()
 
     def remove(self, file_paths):
         '''
@@ -656,21 +672,23 @@ class SquirrelStats(Object):
         codes = ['.'.join(x) for x in self.codes]
 
         if len(codes) > 20:
-            codes = codes[:10] \
-                + ['[%i more]' % (len(codes) - 20)] \
-                + codes[-10:]
+            scodes = '\n' + util.ewrap(codes[:10], indent='  ') \
+                + '\n  [%i more]\n' % (len(codes) - 20) \
+                + util.ewrap(codes[-10:], indent='  ')
+        else:
+            scodes = '\n' + util.ewrap(codes, indent='  ') \
+                if codes else '<none>'
 
-        scodes = '\n' + util.ewrap(codes, indent='  ') if codes else '<none>'
         stmin = util.tts(self.tmin) if self.tmin is not None else '<none>'
         stmax = util.tts(self.tmax) if self.tmax is not None else '<none>'
 
         s = '''
-available codes:               %s
-number of files:               %i
-total size of known files:     %s
-number of index nuts:          %i
-available nut kinds:           %s
-time span of indexed contents: %s - %s''' % (
+Available codes:               %s
+Number of files:               %i
+Total size of known files:     %s
+Number of index nuts:          %i
+Available nut kinds:           %s
+Time span of indexed contents: %s - %s''' % (
             scodes,
             self.nfiles,
             util.human_bytesize(self.total_size),
@@ -932,11 +950,12 @@ class Squirrel(Selection):
 
         kind_mask = model.to_kind_mask(kinds)
 
-        Selection.add(
-            self, self.iter_expand_dirs(file_paths), kind_mask, format)
+        with self.progress.show_in_terminal:
+            Selection.add(
+                self, self.iter_expand_dirs(file_paths), kind_mask, format)
 
-        self._load(check)
-        self._update_nuts()
+            self._load(check)
+            self._update_nuts()
 
     def reload(self):
         self._set_file_states_force_check()
@@ -974,11 +993,14 @@ class Squirrel(Selection):
                 self,
                 content=[],
                 skip_unchanged=True,
-                check=check):
+                check=check,
+                progress=self.progress):
             pass
 
     def _update_nuts(self):
-        self._conn.execute(self._sql(
+        task = self.progress.task('Aggregating selection')
+        self._conn.set_progress_handler(task.update, 100000)
+        nrows = self._conn.execute(self._sql(
             '''
                 INSERT INTO %(db)s.%(nuts)s
                 SELECT NULL,
@@ -996,9 +1018,12 @@ class Squirrel(Selection):
                 WHERE %(db)s.%(file_states)s.file_state != 2
                     AND (((1 << kind_codes.kind_id)
                         & %(db)s.%(file_states)s.kind_mask) != 0)
-            '''))
+            ''')).rowcount
 
+        task.update(nrows)
         self._set_file_states_known()
+        self._conn.set_progress_handler(None, 0)
+        task.done()
 
     def add_source(self, source):
         '''
@@ -1837,18 +1862,19 @@ class DatabaseStats(Object):
         codes = ['.'.join(x) for x in self.codes]
 
         if len(codes) > 20:
-            codes = codes[:10] \
-                + ['[%i more]' % (len(codes) - 20)] \
-                + codes[-10:]
-
-        scodes = '\n' + util.ewrap(codes, indent='  ') if codes else '<none>'
+            scodes = '\n' + util.ewrap(codes[:10], indent='  ') \
+                + '\n  [%i more]\n' % (len(codes) - 20) \
+                + util.ewrap(codes[-10:], indent='  ')
+        else:
+            scodes = '\n' + util.ewrap(codes, indent='  ') \
+                if codes else '<none>'
 
         s = '''
-available codes:               %s
-number of files:               %i
-total size of known files:     %s
-number of index nuts:          %i
-available nut kinds:           %s''' % (
+Available codes:               %s
+Number of files:               %i
+Total size of known files:     %s
+Number of index nuts:          %i
+Available nut kinds:           %s''' % (
             scodes,
             self.nfiles,
             util.human_bytesize(self.total_size),

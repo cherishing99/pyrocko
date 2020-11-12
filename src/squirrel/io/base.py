@@ -116,7 +116,8 @@ def iload(
         check=True,
         commit=True,
         skip_unchanged=False,
-        content=g_content_kinds):
+        content=g_content_kinds,
+        progress=None):
 
     '''
     Iteratively load content or index/reindex meta-information from files.
@@ -194,8 +195,18 @@ def iload(
     else:
         it = (((format, path), []) for path in paths)
 
+    if progress is not None:
+        if not kind_ids:
+            task = progress.task('Indexing files')
+        else:
+            task = progress.task('Loading files')
+
     n_files = 0
     for (format, path), old_nuts in it:
+        if task is not None:
+            condition = '(nuts: %i new, %i old) %s' % (n_load, n_db, path)
+            task.update(n_files, condition)
+
         n_files += 1
         if database and commit and n_files % 1000 == 0:
             database.commit()
@@ -263,6 +274,11 @@ def iload(
             logger.error('An error occured while reading file: %s' % path)
             if database:
                 database.reset(path)
+
+    if task is not None:
+        condition = '(nuts: %i new, %i old)' % (n_load, n_db)
+        task.update(n_files, condition)
+        task.done(condition)
 
     if database:
         if commit:

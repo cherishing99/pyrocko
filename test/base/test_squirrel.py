@@ -804,7 +804,7 @@ class SquirrelTestCase(unittest.TestCase):
             for iframe, lines in enumerate(frames):
                 logger.info('frame %i' % iframe)
                 t.draw(lines)
-                time.sleep(1.)
+                time.sleep(0.1)
 
     def test_progress(self):
         from pyrocko.squirrel import progress
@@ -825,7 +825,7 @@ class SquirrelTestCase(unittest.TestCase):
                 s[1] += 2
 
                 if i == 500:
-                    t2.end()
+                    t2.done()
 
                 if i == 200:
                     t3 = p.task('late task', 20)
@@ -836,13 +836,12 @@ class SquirrelTestCase(unittest.TestCase):
 
                 t2.update(s[1])
                 if s[2] == 20:
-                    t3.end()
+                    t3.done()
 
-                time.sleep(.005)
+                time.sleep(.0005)
 
                 if s[0] == 666:
                     t1.fail('oh damn...')
-
 
 
 if __name__ == "__main__":
