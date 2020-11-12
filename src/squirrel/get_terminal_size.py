@@ -1,6 +1,11 @@
-#!/usr/bin/env python
+from __future__ import absolute_import, print_function
 
-# based on https://gist.github.com/jtriley/1108174
+#
+# This file is NOT part of Pyrocko.
+#
+# Code is considered public domain, based on
+# https://gist.github.com/jtriley/1108174
+#
 
 import os
 import struct
@@ -98,7 +103,5 @@ def _get_terminal_size_linux():
 
 
 if __name__ == "__main__":
-    sizex, sizey = get_terminal_size()
-    print(sizex, sizey)
     sizex, sizey = get_terminal_size()
     print(sizex, sizey)

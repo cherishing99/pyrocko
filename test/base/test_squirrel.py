@@ -6,6 +6,7 @@ import unittest
 import tempfile
 import shutil
 import os.path as op
+import logging
 from collections import defaultdict
 
 import numpy as num
@@ -16,6 +17,9 @@ try:
     from StringIO import StringIO
 except ImportError:
     from io import StringIO
+
+
+logger = logging.getLogger('test_squirrel.py')
 
 
 class SquirrelTestCase(unittest.TestCase):
@@ -783,20 +787,62 @@ class SquirrelTestCase(unittest.TestCase):
             gather=lambda tr: tr.station,
             selector=lambda tr: tr.channel == 'BHZ')) == ['LGG01']
 
+    def test_terminal_status_window(self):
+
+        frames = []
+        for iframe in range(11):
+            lines = []
+            for iline in range(5-abs(iframe-5)):
+                lines.append(str(iframe) * (iframe % 4))
+
+            frames.append(lines)
+
+        from pyrocko.squirrel import progress
+        util.setup_logging('x', 'info')
+
+        with progress.TerminalStatusWindow() as t:
+            for iframe, lines in enumerate(frames):
+                logger.info('frame %i' % iframe)
+                t.draw(lines)
+                time.sleep(1.)
+
     def test_progress(self):
         from pyrocko.squirrel import progress
 
         p = progress.Progress()
 
-        t1 = p.task('get file names')
-        t2 = p.task('get modification times')
-        for i in range(1000):
-            t1.update(i)
-            t2.update(i)
-            time.sleep(0.02)
+        t1 = p.task('a task')
+        t2 = p.task('another task', 500)
 
-        t1.end()
-        t2.end()
+        with p.show_in_terminal:
+
+            s = [0, 0, 0]
+            for i in range(1000):
+                if i > 300:
+                    s[0] += 1
+                    t1.update(s[0])
+
+                s[1] += 2
+
+                if i == 500:
+                    t2.end()
+
+                if i == 200:
+                    t3 = p.task('late task', 20)
+
+                if i > 200 and i % 5 == 0:
+                    s[2] += 1
+                    t3.update(s[2])
+
+                t2.update(s[1])
+                if s[2] == 20:
+                    t3.end()
+
+                time.sleep(.005)
+
+                if s[0] == 666:
+                    t1.fail('oh damn...')
+
 
 
 if __name__ == "__main__":
