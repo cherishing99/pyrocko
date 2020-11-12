@@ -57,14 +57,14 @@ class Pile(object):
         return self.tmax
 
     def get_deltatmin(self):
-        # TODO: implement
-        print('Dummy value returned from get_deltatmin (not implemented).')
-        return 0.0005
+        return self._squirrel.get_waveform_deltat_span()[0]
 
     def get_deltatmax(self):
-        # TODO: implement
-        print('Dummy value returned from get_deltatmax (not implemented).')
-        return 1.0
+        return self._squirrel.get_waveform_deltat_span()[1]
+
+    @property
+    def deltatmin(self):
+        return self.get_deltatmin()
 
     @property
     def deltatmax(self):

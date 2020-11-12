@@ -148,8 +148,6 @@ class SquirrelTestCase(unittest.TestCase):
                 counts = sq.get_counts()
                 for k in counts:
                     assert set(counts[k]) == set(sq.get_counts(k))
-                    for (_, codes), count in sq.iter_counts(k):
-                        assert count == counts[k][codes]
 
                 db = sq.get_database()
                 counts = db.get_counts()
@@ -399,7 +397,8 @@ class SquirrelTestCase(unittest.TestCase):
                     tmin_offset=tmin_offset,
                     tmax_seconds=tmax_seconds,
                     tmax_offset=tmax_offset,
-                    kind_id=squirrel.to_kind_id('undefined')))
+                    deltat=[0.5, 1.0][file_element % 2],
+                    kind_id=squirrel.to_kind_id('waveform')))
 
         squirrel.io.backends.virtual.add_nuts(all_nuts)
 
@@ -452,7 +451,7 @@ class SquirrelTestCase(unittest.TestCase):
 
                 expect.append(
                     len(list(sq.iter_nuts(
-                        'undefined', tmin=tmin, tmax=tmax, naiv=True))))
+                        'waveform', tmin=tmin, tmax=tmax, naiv=True))))
                 assert expect[-1] >= 10
 
         with bench.run('undig span'):
@@ -461,12 +460,15 @@ class SquirrelTestCase(unittest.TestCase):
                 tmax = tmin_g + (iwin+1) * tinc
 
                 assert len(sq.get_nuts(
-                    'undefined', tmin=tmin, tmax=tmax)) == expect[iwin]
+                    'waveform', tmin=tmin, tmax=tmax)) == expect[iwin]
+
+        with bench.run('get deltat span'):
+            assert sq.get_waveform_deltat_span() == (0.5, 1.0)
 
         return bench
 
     def benchmark_loading(self):
-        bench = self.test_loading(hours=24, with_pile=True)
+        bench = self.test_loading(hours=24, with_pile=False)
         print(bench)
 
     def test_loading(self, with_pile=False, hours=1):
@@ -596,6 +598,9 @@ class SquirrelTestCase(unittest.TestCase):
             for kind in s.kinds:
                 for codes in s.codes:
                     assert s.counts[kind][codes] == len(fns) // 30
+
+        with bench.run('get deltat span'):
+            sq.get_waveform_deltat_span()
 
         return bench
 
@@ -777,6 +782,21 @@ class SquirrelTestCase(unittest.TestCase):
         assert list(sq.pile.gather_keys(
             gather=lambda tr: tr.station,
             selector=lambda tr: tr.channel == 'BHZ')) == ['LGG01']
+
+    def test_progress(self):
+        from pyrocko.squirrel import progress
+
+        p = progress.Progress()
+
+        t1 = p.task('get file names')
+        t2 = p.task('get modification times')
+        for i in range(1000):
+            t1.update(i)
+            t2.update(i)
+            time.sleep(0.02)
+
+        t1.end()
+        t2.end()
 
 
 if __name__ == "__main__":

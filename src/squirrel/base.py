@@ -22,7 +22,7 @@ from . import model, io, cache
 
 from .model import to_kind_id, to_kind, separator, WaveformOrder
 from .client import fdsn, catalog
-from . import client, environment, error, pile
+from . import client, environment, error, pile, progress
 
 logger = logging.getLogger('pyrocko.squirrel.base')
 
@@ -243,6 +243,8 @@ class Selection(object):
                 ON %(file_states)s (file_state)
             '''))
 
+        self.progress = progress.Progress()
+
     def __del__(self):
         if hasattr(self, '_conn') and self._conn:
             if not self._persistent:
@@ -365,6 +367,7 @@ class Selection(object):
         except TypeError:
             pass
 
+        task = self.progress.task('getting file names')
         self._conn.execute(self._sql(
             '''
                 CREATE TEMP TABLE temp.%(bulkinsert)s
@@ -373,7 +376,7 @@ class Selection(object):
 
         self._conn.executemany(self._sql(
             'INSERT INTO temp.%(bulkinsert)s VALUES (?)'),
-            ((x,) for x in file_paths))
+            ((x,) for x in task(file_paths)))
 
         self._conn.execute(self._sql(
             '''
@@ -491,7 +494,7 @@ class Selection(object):
                 nuts.tmin_offset,
                 nuts.tmax_seconds,
                 nuts.tmax_offset,
-                nuts.deltat
+                kind_codes.deltat
             FROM %(db)s.%(file_states)s
             LEFT OUTER JOIN files
                 ON %(db)s.%(file_states)s.file_id = files.file_id
@@ -737,7 +740,6 @@ class Squirrel(Selection):
                     tmin_offset float,
                     tmax_seconds integer,
                     tmax_offset float,
-                    deltat float,
                     kscale integer)
             ''')))
 
@@ -777,6 +779,23 @@ class Squirrel(Selection):
                 CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_kscale
                 ON %(nuts)s (kind_id, kscale, tmin_seconds)
             '''))
+
+        # c.execute(self._sql(
+        #     '''
+        #         CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_deltat
+        #         ON %(nuts)s (deltat) WHERE deltat != NULL'''))
+
+        # c.execute(self._sql(
+        #     '''
+        #         CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_deltat
+        #         ON %(nuts)s (deltat) WHERE kind_id == '''
+        #     + str(to_kind_id('waveform'))))
+
+        # c.execute(self._sql(
+        #     '''
+        #         CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_deltat
+        #         ON %(nuts)s (deltat)
+        #     '''))
 
         c.execute(self._sql(
             '''
@@ -967,7 +986,7 @@ class Squirrel(Selection):
                     nuts.kind_id, nuts.kind_codes_id,
                     nuts.tmin_seconds, nuts.tmin_offset,
                     nuts.tmax_seconds, nuts.tmax_offset,
-                    nuts.deltat, nuts.kscale
+                    nuts.kscale
                 FROM %(db)s.%(file_states)s
                 INNER JOIN nuts
                     ON %(db)s.%(file_states)s.file_id == nuts.file_id
@@ -1129,7 +1148,7 @@ class Squirrel(Selection):
                 %(db)s.%(nuts)s.tmin_offset,
                 %(db)s.%(nuts)s.tmax_seconds,
                 %(db)s.%(nuts)s.tmax_offset,
-                %(db)s.%(nuts)s.deltat
+                kind_codes.deltat
             FROM files
             INNER JOIN %(db)s.%(nuts)s
                 ON files.file_id == %(db)s.%(nuts)s.file_id
@@ -1224,7 +1243,7 @@ class Squirrel(Selection):
                 %(db)s.%(nuts)s.tmin_offset,
                 %(db)s.%(nuts)s.tmax_seconds,
                 %(db)s.%(nuts)s.tmax_offset,
-                %(db)s.%(nuts)s.deltat
+                kind_codes.deltat
             FROM files
             INNER JOIN %(db)s.%(nuts)s
                 ON files.file_id == %(db)s.%(nuts)s.file_id
@@ -1266,11 +1285,11 @@ class Squirrel(Selection):
         sql_add = '''
             INSERT INTO %(db)s.%(nuts)s (
                     file_id, file_segment, file_element, kind_id,
-                    kind_codes_id, deltat, tmin_seconds, tmin_offset,
+                    kind_codes_id, tmin_seconds, tmin_offset,
                     tmax_seconds, tmax_offset, kscale )
                 SELECT
                     file_id, file_segment, file_element,
-                    kind_id, kind_codes_id, deltat, ?, ?, ?, ?, ?
+                    kind_id, kind_codes_id, ?, ?, ?, ?, ?
                 FROM %(db)s.%(nuts)s
                 WHERE nut_id == ?
         '''
@@ -1307,6 +1326,22 @@ class Squirrel(Selection):
 
         return tmin, tmax
 
+    def get_waveform_deltat_span(self):
+        '''
+        Get min and max sampling interval of all waveform contents.
+
+        :returns: (deltat_min, deltat_max)
+        '''
+
+        deltats = [
+            deltat for deltat in self.get_deltats(kind='waveform')
+            if deltat is not None]
+
+        if deltats:
+            return min(deltats), max(deltats)
+        else:
+            return None, None
+
     def iter_kinds(self, codes=None):
         '''
         Iterate over content types available in selection.
@@ -1318,6 +1353,20 @@ class Squirrel(Selection):
 
         return self._database._iter_kinds(
             codes=codes,
+            kind_codes_count='%(db)s.%(kind_codes_count)s' % self._names)
+
+    def iter_deltats(self, kind=None):
+        '''
+        Iterate over sampling intervals available in selection.
+
+        :param kind: if given, get sampling intervals only for a given content
+            type
+        :type kind: ``str``
+
+        Complexity: O(1), independent of number of nuts
+        '''
+        return self._database._iter_deltats(
+            kind=kind,
             kind_codes_count='%(db)s.%(kind_codes_count)s' % self._names)
 
     def iter_codes(self, kind=None):
@@ -1359,6 +1408,18 @@ class Squirrel(Selection):
         '''
         return sorted(list(self.iter_kinds(codes=codes)))
 
+    def get_deltats(self, kind=None):
+        '''
+        Get sampling intervals available in selection.
+
+        :param kind: if given, get codes only for selected content type
+
+        Complexity: O(1), independent of number of nuts
+
+        :returns: sorted list of available sampling intervals
+        '''
+        return sorted(list(self.iter_deltats(kind=kind)))
+
     def get_codes(self, kind=None):
         '''
         Get identifier code sequences available in selection.
@@ -1383,11 +1444,16 @@ class Squirrel(Selection):
             if kind is not ``None``
         '''
         d = {}
-        for (k, codes), count in self.iter_counts():
+        for (k, codes, deltat), count in self.iter_counts():
             if k not in d:
-                d[k] = {}
+                v = d[k] = {}
+            else:
+                v = d[k]
 
-            d[k][codes] = count
+            if codes not in v:
+                v[codes] = 0
+
+            v[codes] += count
 
         if kind is not None:
             return d[kind]
@@ -1888,7 +1954,6 @@ class Database(object):
                         tmin_offset float,
                         tmax_seconds integer,
                         tmax_offset float,
-                        deltat float,
                         kscale integer)
                 '''))
 
@@ -1903,13 +1968,14 @@ class Database(object):
                     CREATE TABLE IF NOT EXISTS kind_codes (
                         kind_codes_id integer PRIMARY KEY,
                         kind_id integer,
-                        codes text)
+                        codes text,
+                        deltat float)
                 '''))
 
             c.execute(
                 '''
                     CREATE UNIQUE INDEX IF NOT EXISTS index_kind_codes
-                    ON kind_codes (kind_id, codes)
+                    ON kind_codes (kind_id, codes, deltat)
                 ''')
 
             c.execute(self._register_table(
@@ -1996,7 +2062,7 @@ class Database(object):
                 nut.file_format,
                 nut.file_mtime,
                 nut.file_size))
-            kind_codes.add((nut.kind_id, nut.codes))
+            kind_codes.add((nut.kind_id, nut.codes, nut.deltat or 0.0))
 
         c.executemany(
             'INSERT OR IGNORE INTO files VALUES (NULL,?,?,?,?)', files)
@@ -2009,7 +2075,7 @@ class Database(object):
             ((x[1], x[2], x[3], x[0]) for x in files))
 
         c.executemany(
-            'INSERT OR IGNORE INTO kind_codes VALUES (NULL,?,?)', kind_codes)
+            'INSERT OR IGNORE INTO kind_codes VALUES (NULL,?,?,?)', kind_codes)
 
         c.executemany(
             '''
@@ -2020,15 +2086,15 @@ class Database(object):
                      ),?,?,?,
                      (
                         SELECT kind_codes_id FROM kind_codes
-                        WHERE kind_id == ? AND codes == ?
-                     ), ?,?,?,?,?,?)
+                        WHERE kind_id == ? AND codes == ? AND deltat == ?
+                     ), ?,?,?,?,?)
             ''',
             ((nut.file_path, nut.file_segment, nut.file_element,
               nut.kind_id,
-              nut.kind_id, nut.codes,
+              nut.kind_id, nut.codes, nut.deltat or 0.0,
               nut.tmin_seconds, nut.tmin_offset,
               nut.tmax_seconds, nut.tmax_offset,
-              nut.deltat, nut.kscale) for nut in nuts))
+              nut.kscale) for nut in nuts))
 
         self._need_commit = True
         c.close()
@@ -2048,7 +2114,7 @@ class Database(object):
                 nuts.tmin_offset,
                 nuts.tmax_seconds,
                 nuts.tmax_offset,
-                nuts.deltat
+                kind_codes.deltat
             FROM files
             INNER JOIN nuts ON files.file_id = nuts.file_id
             INNER JOIN kind_codes
@@ -2074,7 +2140,7 @@ class Database(object):
                 nuts.tmin_offset,
                 nuts.tmax_seconds,
                 nuts.tmax_offset,
-                nuts.deltat
+                kind_codes.deltat
             FROM files
             INNER JOIN nuts ON files.file_id == nuts.file_id
             INNER JOIN kind_codes
@@ -2159,6 +2225,7 @@ class Database(object):
             SELECT
                 kind_codes.kind_id,
                 kind_codes.codes,
+                kind_codes.deltat,
                 %(kind_codes_count)s.count
             FROM %(kind_codes_count)s
             INNER JOIN kind_codes
@@ -2168,8 +2235,32 @@ class Database(object):
                 ''' + sel + '''
         ''') % {'kind_codes_count': kind_codes_count}
 
-        for kind_id, codes, count in self._conn.execute(sql, args):
-            yield (to_kind(kind_id), tuple(codes.split(separator))), count
+        for kind_id, codes, deltat, count in self._conn.execute(sql, args):
+            yield (
+                to_kind(kind_id),
+                tuple(codes.split(separator)),
+                deltat), count
+
+    def _iter_deltats(self, kind=None, kind_codes_count='kind_codes_count'):
+        args = []
+        sel = ''
+        if kind is not None:
+            assert isinstance(kind, str)
+            sel = 'AND kind_codes.kind_id == ?'
+            args.append(to_kind_id(kind))
+
+        sql = ('''
+            SELECT DISTINCT kind_codes.deltat FROM %(kind_codes_count)s
+            INNER JOIN kind_codes
+                ON %(kind_codes_count)s.kind_codes_id
+                    == kind_codes.kind_codes_id
+            WHERE %(kind_codes_count)s.count > 0
+                ''' + sel + '''
+            ORDER BY kind_codes.deltat
+        ''') % {'kind_codes_count': kind_codes_count}
+
+        for row in self._conn.execute(sql, args):
+            yield row[0]
 
     def _iter_codes(self, kind=None, kind_codes_count='kind_codes_count'):
         args = []
@@ -2230,11 +2321,16 @@ class Database(object):
 
     def get_counts(self, kind=None):
         d = {}
-        for (k, codes), count in self.iter_counts():
+        for (k, codes, deltat), count in self.iter_counts():
             if k not in d:
-                d[k] = {}
+                v = d[k] = {}
+            else:
+                v = d[k]
 
-            d[k][codes] = count
+            if codes not in v:
+                v[codes] = 0
+
+            v[codes] += count
 
         if kind is not None:
             return d[kind]

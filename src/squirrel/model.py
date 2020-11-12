@@ -495,7 +495,7 @@ class Nut(Object):
     tmax_seconds = Timestamp.T()
     tmax_offset = Float.T(default=0.0, optional=True)
 
-    deltat = Float.T(optional=True)
+    deltat = Float.T(default=0.0)
 
     content = Content.T(optional=True)
 
