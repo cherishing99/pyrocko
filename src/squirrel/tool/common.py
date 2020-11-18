@@ -9,6 +9,8 @@ import argparse
 
 from pyrocko import util
 
+from ..import error
+
 
 class PyrockoHelpFormatter(argparse.RawDescriptionHelpFormatter):
     def __init__(self, *args, **kwargs):
@@ -110,7 +112,9 @@ def add_query_arguments(p):
         '--codes',
         dest='codes',
         metavar='CODES',
-        help='Code pattern to query (AGENCY.NET.STA.LOC.CHA).')
+        help='Code pattern to query (STA, NET.STA, NET.STA.LOC, '
+             'NET.STA.LOC.CHA, NET.STA.LOC.CHA.EXTRA, '
+             'AGENCY.NET.STA.LOC.CHA.EXTRA).')
 
     p.add_argument(
         '--tmin',
@@ -124,16 +128,28 @@ def add_query_arguments(p):
         metavar='TIME',
         help='End of time interval to query.')
 
+    p.add_argument(
+        '--time',
+        dest='time',
+        metavar='TIME',
+        help='Time instant to query.')
+
 
 def squirrel_query_from_arguments(args):
     d = {}
+    if (args.tmin and args.time) or (args.tmax and args.time):
+        raise error.SquirrelError(
+            'Options --tmin/--tmax and --time are mutually exclusive.')
+
     if args.kinds:
         d['kind'] = args.kinds
     if args.tmin:
         d['tmin'] = util.str_to_time(args.tmin)
     if args.tmax:
         d['tmax'] = util.str_to_time(args.tmax)
+    if args.time:
+        d['tmin'] = d['tmax'] = util.str_to_time(args.time)
     if args.codes:
-        d['codes'] = args.codes
+        d['codes'] = tuple(args.codes.split('.'))
 
     return d

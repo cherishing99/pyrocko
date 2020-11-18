@@ -59,14 +59,12 @@ def detect_pyrocko_events(first512):
                 ok += 1
                 continue
             else:
-                print('x', t[0])
                 return False
 
         if line.startswith('---'):
             ok += 1
             continue
 
-        print('y')
         return False
 
     return ok > 2

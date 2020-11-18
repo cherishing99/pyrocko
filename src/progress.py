@@ -34,13 +34,13 @@ ansi_reset = u'\033c'
 
 
 class TerminalStatusWindow(object):
-    def __init__(self):
+    def __init__(self, parent=None):
         self._terminal_size = get_terminal_size()
         self._height = 0
         self._state = 0
+        self._parent = parent
 
     def __enter__(self):
-        self.start()
         return self
 
     def __exit__(self, *_):
@@ -59,11 +59,15 @@ class TerminalStatusWindow(object):
         self._state = 1
 
     def stop(self):
-        sx, sy = self._terminal_size
-        self._resize(0)
-        self.print(ansi_move_to % (sy-self._height, 1))
-        self.flush()
+        if self._state == 1:
+            sx, sy = self._terminal_size
+            self._resize(0)
+            self.print(ansi_move_to % (sy-self._height, 1))
+            self.flush()
+
         self._state = 2
+        if self._parent:
+            self._parent.hide()
 
     def _start_show(self):
         sx, sy = self._terminal_size
@@ -87,6 +91,9 @@ class TerminalStatusWindow(object):
         self._height = height
 
     def draw(self, lines):
+        if self._state == 0:
+            self.start()
+
         if self._state != 1:
             return
 
@@ -113,7 +120,10 @@ class TerminalStatusWindow(object):
 
 
 class Task(object):
-    def __init__(self, progress, id, name, n, state='working'):
+    def __init__(
+            self, progress, id, name, n, state='working', logger=None,
+            group=None):
+
         self._id = id
         self._name = name
         self._condition = ''
@@ -124,17 +134,37 @@ class Task(object):
         assert state in ('waiting', 'working')
         self._state = state
         self._progress = progress
+        self._logger = logger
+        self._tcreate = time.time()
+        self._group = group
 
     def __call__(self, it):
         try:
             for i, obj in enumerate(it):
                 self.update(i)
                 yield obj
+
+            self.update(i+1)
+
         except Exception:
             self.fail()
 
         finally:
             self.done()
+
+    def log(self, s):
+        if self._logger is not None:
+            self._logger.info(s)
+
+    def get_group_time_start(self):
+        if self._group:
+            return self._group.get_group_time_start()
+        else:
+            return self._tcreate
+
+    def task(self, *args, **kwargs):
+        kwargs['group'] = self
+        return self._progress.task(*args, **kwargs)
 
     def update(self, i=None, condition=''):
         self._state = 'working'
@@ -148,6 +178,8 @@ class Task(object):
         self._progress._update()
 
     def done(self, condition=''):
+        self.duration = time.time() - self._tcreate
+
         if self._state in ('done', 'failed'):
             return
 
@@ -156,6 +188,8 @@ class Task(object):
         self._progress._end(self)
 
     def fail(self, condition=''):
+        self.duration = time.time() - self._tcreate
+
         self._condition = condition
         self._state = 'failed'
         self._progress._end(self)
@@ -163,16 +197,16 @@ class Task(object):
     def _str_state(self):
         s = self._state
         if s == 'waiting':
-            return ' '
+            return '  '
         elif s == 'working':
             self._ispin += 1
-            return spinner[self._ispin % len(spinner)]
+            return spinner[self._ispin % len(spinner)] + ' '
         elif s == 'done':
-            return check
+            return ''  # check
         elif s == 'failed':
-            return skull
+            return skull + ' '
         else:
-            return '?'
+            return '? '
 
     def _str_progress(self):
         if self._i is None:
@@ -201,7 +235,7 @@ class Task(object):
             return ''
 
     def __str__(self):
-        return '%s %s: %s' % (
+        return '%s%s: %s' % (
             self._str_state(),
             self._name,
             ' '.join([
@@ -214,6 +248,7 @@ class Progress(object):
 
     def __init__(self):
         self._current_id = 0
+        self._current_group_id = 0
         self._tasks = {}
         self._tasks_done = []
         self._last_update = 0.0
@@ -221,12 +256,17 @@ class Progress(object):
 
     @property
     def show_in_terminal(self):
-        self._term = TerminalStatusWindow()
+        self._term = TerminalStatusWindow(self)
         return self._term
 
-    def task(self, name, n=None):
+    def hide(self):
+        self._update(force=True)
+        self._term = None
+
+    def task(self, name, n=None, logger=None, group=None):
         self._current_id += 1
-        task = Task(self, self._current_id, name, n)
+        task = Task(
+            self, self._current_id, name, n, logger=logger, group=group)
         self._tasks[task._id] = task
         self._update(force=True)
         return task
@@ -239,26 +279,26 @@ class Progress(object):
     def _update(self, force=False):
         now = time.time()
         if self._last_update + 0.1 < now or force:
-            lines_done, lines = self._lines()
-            for line in lines_done:
-                print(line, file=sys.stderr)
+            tasks_done = self._tasks_done
+            self._tasks_done = []
+            if self._term:
+                for task in tasks_done:
+                    task.log(str(task))
 
-            if self._term and self._term.active:
+            lines = self._lines()
+            if self._term:
                 self._term.draw(lines)
 
             self._last_update = now
 
     def _lines(self):
         task_ids = sorted(self._tasks)
-        lines_done = []
-        for task in self._tasks_done:
-            lines_done.append(str(task))
-
-        self._tasks_done = []
-
         lines = []
         for task_id in task_ids:
             task = self._tasks[task_id]
             lines.append(str(task))
 
-        return lines_done, lines
+        return lines
+
+
+progress = Progress()

@@ -24,6 +24,7 @@ import numpy as num
 from scipy import signal
 from pyrocko import dummy_progressbar
 
+
 try:
     from urllib.parse import urlencode, quote, unquote  # noqa
     from urllib.request import (

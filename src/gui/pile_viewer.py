@@ -19,7 +19,6 @@ from itertools import groupby
 import numpy as num
 import pyrocko.model
 import pyrocko.pile
-import pyrocko.shadow_pile
 import pyrocko.trace
 import pyrocko.util
 import pyrocko.plot
@@ -179,16 +178,6 @@ class Timer(object):
         return tuple([a[i] - b[i] for i in range(5)])
 
 
-class Integrator(pyrocko.shadow_pile.ShadowPile):
-
-    def process(self, iblock, tmin, tmax, traces):
-        for trace in traces:
-            trace.ydata = trace.ydata - trace.ydata.mean()
-            trace.ydata = num.cumsum(trace.ydata)
-
-        return traces
-
-
 class ObjectStyle(object):
     def __init__(self, frame_pen, fill_brush):
         self.frame_pen = frame_pen
@@ -205,6 +194,25 @@ for color in 'orange skyblue butter chameleon chocolate plum ' \
         qg.QBrush(qg.QColor(
             *(pyrocko.plot.tango_colors[color+'1'] + (box_alpha,)))),
     ))
+
+box_styles_coverage = [
+    ObjectStyle(
+        qg.QPen(
+            qg.QColor(*pyrocko.plot.tango_colors['aluminium3']),
+            1, qc.Qt.DashLine),
+        qg.QBrush(qg.QColor(
+            *(pyrocko.plot.tango_colors['aluminium1'] + (50,)))),
+    ),
+    ObjectStyle(
+        qg.QPen(qg.QColor(*pyrocko.plot.tango_colors['aluminium4'])),
+        qg.QBrush(qg.QColor(
+            *(pyrocko.plot.tango_colors['aluminium2'] + (50,)))),
+    ),
+    ObjectStyle(
+        qg.QPen(qg.QColor(*pyrocko.plot.tango_colors['plum3'])),
+        qg.QBrush(qg.QColor(
+            *(pyrocko.plot.tango_colors['plum1'] + (50,)))),
+    )]
 
 sday = 60*60*24.       # \
 smonth = 60*60*24*30.  # | only used as approx. intervals...
@@ -890,38 +898,25 @@ def MakePileViewerMainClass(base):
 
             menudef = [
                 ('Subsort by Network, Station, Location, Channel',
-                    (lambda tr: self.ssort(tr) + tr.nslc_id,     # gathering
-                     lambda a: a,                                # sorting
+                    ((0, 1, 2, 3),     # gathering
                      lambda tr: tr.location)),                   # coloring
                 ('Subsort by Network, Station, Channel, Location',
-                    (lambda tr: self.ssort(tr) + (
-                        tr.network, tr.station, tr.channel, tr.location),
-                     lambda a: a,
+                    ((0, 1, 3, 2),
                      lambda tr: tr.channel)),
                 ('Subsort by Station, Network, Channel, Location',
-                    (lambda tr: self.ssort(tr) + (
-                        tr.station, tr.network, tr.channel, tr.location),
-                     lambda a: a,
+                    ((1, 0, 3, 2),
                      lambda tr: tr.channel)),
                 ('Subsort by Location, Network, Station, Channel',
-                    (lambda tr: self.ssort(tr) + (
-                        tr.location, tr.network, tr.station, tr.channel),
-                     lambda a: a,
+                    ((2, 0, 1, 3),
                      lambda tr: tr.channel)),
                 ('Subsort by Channel, Network, Station, Location',
-                    (lambda tr: self.ssort(tr) + (
-                        tr.channel, tr.network, tr.station, tr.location),
-                     lambda a: a,
+                    ((3, 0, 1, 2),
                      lambda tr: (tr.network, tr.station, tr.location))),
                 ('Subsort by Network, Station, Channel (Grouped by Location)',
-                    (lambda tr: self.ssort(tr) + (
-                        tr.network, tr.station, tr.channel),
-                     lambda a: a,
+                    ((0, 1, 3),
                      lambda tr: tr.location)),
                 ('Subsort by Station, Network, Channel (Grouped by Location)',
-                    (lambda tr: self.ssort(tr) + (
-                        tr.station, tr.network, tr.channel),
-                     lambda a: a,
+                    ((1, 0, 3),
                      lambda tr: tr.location)),
             ]
 
@@ -1037,15 +1032,6 @@ def MakePileViewerMainClass(base):
                 self.setup_snufflings)
 
             self.menu.addSeparator()
-
-            # Disable ShadowPileTest
-            if False:
-                self.menuitem_test = qw.QAction('Test', self.menu)
-                self.menuitem_test.setCheckable(True)
-                self.menuitem_test.setChecked(False)
-                self.menu.addAction(self.menuitem_test)
-                self.menuitem_test.triggered.connect(
-                    self.toggletest)
 
             self.menuitem_print = qw.QAction('Print', self.menu)
             self.menu.addAction(self.menuitem_print)
@@ -1360,22 +1346,6 @@ def MakePileViewerMainClass(base):
         def distances_3d_changed(self, ignore):
             self.set_event_marker_as_origin(ignore)
 
-        def toggletest(self, checked):
-            if checked:
-                sp = Integrator()
-
-                self.add_shadow_pile(sp)
-            else:
-                self.remove_shadow_piles()
-
-        def add_shadow_pile(self, shadow_pile):
-            shadow_pile.set_basepile(self.pile)
-            shadow_pile.add_listener(self)
-            self.pile = shadow_pile
-
-        def remove_shadow_piles(self):
-            self.pile = self.pile.get_basepile()
-
         def iter_snuffling_modules(self):
             pjoin = os.path.join
             for path in self.snuffling_paths:
@@ -1590,22 +1560,26 @@ def MakePileViewerMainClass(base):
             if self.automatic_updates:
                 self.update()
 
-        def set_gathering(self, gather=None, order=None, color=None):
+        def set_gathering(self, gather=None, color=None):
 
             if gather is None:
-                def gather(tr):
+                def gather_func(tr):
                     return tr.nslc_id
 
-            if order is None:
-                def order(a):
-                    return a
+                gather = (0, 1, 2, 3)
+
+            else:
+                def gather_func(tr):
+                    return (
+                        self.ssort(tr) + tuple(tr.nslc_id[i] for i in gather))
 
             if color is None:
                 def color(tr):
                     return tr.location
 
-            self.gather = gather
-            keys = self.pile.gather_keys(gather, self.trace_filter)
+            self.gather = gather_func
+            keys = self.pile.gather_keys(gather_func, self.trace_filter)
+
             self.color_gather = color
             self.color_keys = self.pile.gather_keys(color)
             previous_ntracks = self.ntracks
@@ -1624,7 +1598,17 @@ def MakePileViewerMainClass(base):
                 key_at_top = self.track_keys[low]
                 n = high-low
 
-            self.track_keys = sorted(keys, key=order)
+            self.track_keys = sorted(keys)
+
+            track_patterns = []
+            for k in self.track_keys:
+                pat = ['*', '*', '*', '*']
+                for i, j in enumerate(gather):
+                    pat[j] = k[-len(gather)+i]
+
+                track_patterns.append(pat)
+
+            self.track_patterns = track_patterns
 
             if key_at_top is not None:
                 try:
@@ -2741,6 +2725,63 @@ def MakePileViewerMainClass(base):
             for (itrack, istyle), traces in traces_by_style.items():
                 drawbox(itrack, istyle, traces)
 
+        def get_squirrel(self):
+            try:
+                return self.pile._squirrel
+            except AttributeError:
+                return None
+
+        def draw_coverage(self, p, time_projection, track_projections):
+            sq = self.get_squirrel()
+            if sq is None:
+                return
+
+            def drawbox(itrack, tmin, tmax, style):
+                v_projection = track_projections[itrack]
+                dvmin = v_projection(0.)
+                dvmax = v_projection(1.)
+                dtmin = time_projection.clipped(tmin)
+                dtmax = time_projection.clipped(tmax)
+
+                rect = qc.QRectF(dtmin, dvmin, float(dtmax-dtmin), dvmax-dvmin)
+                p.fillRect(rect, style.fill_brush)
+                p.setPen(style.frame_pen)
+                p.drawRect(rect)
+
+            pattern_list = []
+            pattern_to_itrack = {}
+            for key in self.track_keys:
+                itrack = self.key_to_row[key]
+                if itrack not in track_projections:
+                    continue
+
+                pattern = self.track_patterns[itrack]
+                pattern_to_itrack[tuple(pattern)] = itrack
+                pattern_list.append(pattern)
+
+            vmin, vmax = self.get_time_range()
+            for entry in sq.get_coverage(
+                    'waveform', vmin, vmax, pattern_list, limit=500):
+                pattern, codes, deltat, tmin, tmax, cover_data = entry
+                itrack = pattern_to_itrack[tuple(pattern)]
+
+                if cover_data is None:
+                    drawbox(itrack, tmin, tmax, box_styles_coverage[0])
+                else:
+                    t = None
+                    pcount = 0
+                    for tb, count in cover_data:
+                        if t is not None and tb > t:
+                            if pcount > 0:
+                                drawbox(
+                                    itrack, t, tb,
+                                    box_styles_coverage[
+                                        min(len(box_styles_coverage)-1,
+                                            pcount)])
+
+                        t = tb
+                        pcount = count
+
         def tobedrawn(self, markers, uminmax):
             """Returns two lists of indices:
             first indicates which markers should be labeled.
@@ -2797,6 +2838,7 @@ def MakePileViewerMainClass(base):
             """This performs the actual drawing."""
 
             self.timer_draw.start()
+            sq = self.get_squirrel()
 
             if self.gather is None:
                 self.set_gathering()
@@ -2806,7 +2848,7 @@ def MakePileViewerMainClass(base):
                 if not self.sortingmode_change_delayed():
                     self.sortingmode_change()
 
-                    if self.menuitem_showboxes.isChecked():
+                    if self.menuitem_showboxes.isChecked() and sq is None:
                         self.determine_box_styles()
 
                     self.pile_has_changed = False
@@ -2852,8 +2894,13 @@ def MakePileViewerMainClass(base):
 
                 yscaler = pyrocko.plot.AutoScaler()
                 if not printmode and self.menuitem_showboxes.isChecked():
-                    self.draw_trace_boxes(
-                        p, self.time_projection, track_projections)
+                    if sq is None:
+                        self.draw_trace_boxes(
+                            p, self.time_projection, track_projections)
+
+                    else:
+                        self.draw_coverage(
+                            p, self.time_projection, track_projections)
 
                 if self.floating_marker:
                     self.floating_marker.draw(
@@ -3484,9 +3531,9 @@ def MakePileViewerMainClass(base):
             self.sortingmode_change()
 
         def sortingmode_change(self, ignore=None):
-            for menuitem, (gather, order, color) in self.menuitems_sorting:
+            for menuitem, (gather, color) in self.menuitems_sorting:
                 if menuitem.isChecked():
-                    self.set_gathering(gather, order, color)
+                    self.set_gathering(gather, color)
 
             self.sortingmode_change_time = time.time()
 

@@ -17,16 +17,24 @@ from collections import defaultdict
 from pyrocko.io_common import FileLoadError
 from pyrocko.guts import Object, Int, List, Tuple, String, Timestamp, Dict
 from pyrocko import util
+from pyrocko.progress import progress
 
 from . import model, io, cache
 
 from .model import to_kind_id, to_kind, separator, WaveformOrder
 from .client import fdsn, catalog
-from . import client, environment, error, pile, progress
+from . import client, environment, error, pile
 
 logger = logging.getLogger('pyrocko.squirrel.base')
 
+
 guts_prefix = 'pf'
+
+
+def make_task(*args, **kwargs):
+    kwargs['logger'] = logger
+    return progress.task(*args, **kwargs)
+
 
 # TODO remove debugging stuff
 # from matplotlib import pyplot as plt
@@ -94,22 +102,44 @@ def codes_fill(n, codes):
     return codes[:n] + ('*',) * (n-len(codes))
 
 
-kind_to_ncodes = {
+c_kind_to_ncodes = {
     'station': 4,
     'channel': 5,
+    'response': 5,
     'waveform': 6,
-    'waveform_promise': 6}
+    'event': 1,
+    'waveform_promise': 6,
+    'undefined': 1}
+
+
+c_inflated = ['', '*', '*', '*', '*', '*']
+c_offsets = [0, 2, 1, 1, 1, 1, 0]
+
+
+def codes_inflate(codes):
+    codes = codes[:6]
+    inflated = list(c_inflated)
+    ncodes = len(codes)
+    offset = c_offsets[ncodes]
+    inflated[offset:offset+ncodes] = codes
+    return inflated
 
 
 def codes_patterns_for_kind(kind, codes):
-    cfill = codes_fill(kind_to_ncodes[kind], codes)
+    if not codes:
+        return []
+
+    if kind in ('event', 'undefined'):
+        return [codes]
+
+    cfill = codes_inflate(codes)[:c_kind_to_ncodes[kind]]
 
     if kind == 'station':
         cfill2 = list(cfill)
         cfill2[3] = '[*]'
-        return cfill, cfill2
+        return [cfill, cfill2]
 
-    return (cfill,)
+    return [cfill]
 
 
 def group_channels(channels):
@@ -243,8 +273,6 @@ class Selection(object):
                 ON %(file_states)s (file_state)
             '''))
 
-        self.progress = progress.Progress()
-
     def __del__(self):
         if hasattr(self, '_conn') and self._conn:
             if not self._persistent:
@@ -326,14 +354,14 @@ class Selection(object):
             if len(file_paths) < 100:
                 # short non-iterator file_paths: can do without temp table
 
-                task = self.progress.task('Gathering file names')
+                task = make_task('Gathering file names')
                 self._conn.executemany(
                     '''
                         INSERT OR IGNORE INTO files
                         VALUES (NULL, ?, NULL, NULL, NULL)
                     ''', ((x,) for x in task(file_paths)))
 
-                task = self.progress.task('Preparing database', 3)
+                task = make_task('Preparing database', 3)
                 task.update(0, condition='pruning stale information')
                 self._conn.executemany(self._sql(
                     '''
@@ -375,7 +403,7 @@ class Selection(object):
         except TypeError:
             pass
 
-        task = self.progress.task('Gathering file names')
+        task = make_task('Gathering file names')
         self._conn.execute(self._sql(
             '''
                 CREATE TEMP TABLE temp.%(bulkinsert)s
@@ -386,7 +414,7 @@ class Selection(object):
             'INSERT INTO temp.%(bulkinsert)s VALUES (?)'),
             ((x,) for x in task(file_paths)))
 
-        task = self.progress.task('Preparing database', 5)
+        task = make_task('Preparing database', 5)
         task.update(0, condition='adding file names to database')
         self._conn.execute(self._sql(
             '''
@@ -687,7 +715,7 @@ Available codes:               %s
 Number of files:               %i
 Total size of known files:     %s
 Number of index nuts:          %i
-Available nut kinds:           %s
+Available content kinds:       %s
 Time span of indexed contents: %s - %s''' % (
             scodes,
             self.nfiles,
@@ -743,7 +771,8 @@ class Squirrel(Selection):
 
         self._names.update({
             'nuts': self.name + '_nuts',
-            'kind_codes_count': self.name + '_kind_codes_count'})
+            'kind_codes_count': self.name + '_kind_codes_count',
+            'coverage': self.name + '_coverage'})
 
         c.execute(self._register_table(self._sql(
             '''
@@ -755,17 +784,11 @@ class Squirrel(Selection):
                     kind_id integer,
                     kind_codes_id integer,
                     tmin_seconds integer,
-                    tmin_offset float,
+                    tmin_offset integer,
                     tmax_seconds integer,
-                    tmax_offset float,
+                    tmax_offset integer,
                     kscale integer)
             ''')))
-
-        c.execute(self._sql(
-            '''
-                CREATE UNIQUE INDEX IF NOT EXISTS %(db)s.%(nuts)s_file_element
-                    ON %(nuts)s (file_id, file_segment, file_element)
-            '''))
 
         c.execute(self._register_table(self._sql(
             '''
@@ -773,6 +796,12 @@ class Squirrel(Selection):
                     kind_codes_id integer PRIMARY KEY,
                     count integer)
             ''')))
+
+        c.execute(self._sql(
+            '''
+                CREATE UNIQUE INDEX IF NOT EXISTS %(db)s.%(nuts)s_file_element
+                    ON %(nuts)s (file_id, file_segment, file_element)
+            '''))
 
         c.execute(self._sql(
             '''
@@ -797,23 +826,6 @@ class Squirrel(Selection):
                 CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_kscale
                 ON %(nuts)s (kind_id, kscale, tmin_seconds)
             '''))
-
-        # c.execute(self._sql(
-        #     '''
-        #         CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_deltat
-        #         ON %(nuts)s (deltat) WHERE deltat != NULL'''))
-
-        # c.execute(self._sql(
-        #     '''
-        #         CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_deltat
-        #         ON %(nuts)s (deltat) WHERE kind_id == '''
-        #     + str(to_kind_id('waveform'))))
-
-        # c.execute(self._sql(
-        #     '''
-        #         CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_deltat
-        #         ON %(nuts)s (deltat)
-        #     '''))
 
         c.execute(self._sql(
             '''
@@ -870,6 +882,97 @@ class Squirrel(Selection):
                 END
             '''))
 
+        c.execute(self._register_table(self._sql(
+            '''
+                CREATE TABLE IF NOT EXISTS %(db)s.%(coverage)s (
+                    kind_codes_id integer,
+                    time_seconds integer,
+                    time_offset integer,
+                    step integer)
+            ''')))
+
+        c.execute(self._sql(
+            '''
+                CREATE UNIQUE INDEX IF NOT EXISTS %(db)s.%(coverage)s_time
+                    ON %(coverage)s (kind_codes_id, time_seconds, time_offset)
+            '''))
+
+        c.execute(self._sql(
+            '''
+                CREATE TRIGGER IF NOT EXISTS %(db)s.%(nuts)s_add_coverage
+                AFTER INSERT ON %(nuts)s FOR EACH ROW
+                BEGIN
+                    INSERT OR IGNORE INTO %(coverage)s VALUES
+                    (new.kind_codes_id, new.tmin_seconds, new.tmin_offset, 0)
+                    ;
+                    UPDATE %(coverage)s
+                    SET step = step + 1
+                    WHERE new.kind_codes_id == %(coverage)s.kind_codes_id
+                        AND new.tmin_seconds == %(coverage)s.time_seconds
+                        AND new.tmin_offset == %(coverage)s.time_offset
+                    ;
+                    INSERT OR IGNORE INTO %(coverage)s VALUES
+                    (new.kind_codes_id, new.tmax_seconds, new.tmax_offset, 0)
+                    ;
+                    UPDATE %(coverage)s
+                    SET step = step - 1
+                    WHERE new.kind_codes_id == %(coverage)s.kind_codes_id
+                        AND new.tmax_seconds == %(coverage)s.time_seconds
+                        AND new.tmax_offset == %(coverage)s.time_offset
+                    ;
+                    DELETE FROM %(coverage)s
+                        WHERE new.kind_codes_id == %(coverage)s.kind_codes_id
+                            AND new.tmin_seconds == %(coverage)s.time_seconds
+                            AND new.tmin_offset == %(coverage)s.time_offset
+                            AND step == 0
+                    ;
+                    DELETE FROM %(coverage)s
+                        WHERE new.kind_codes_id == %(coverage)s.kind_codes_id
+                            AND new.tmax_seconds == %(coverage)s.time_seconds
+                            AND new.tmax_offset == %(coverage)s.time_offset
+                            AND step == 0
+                    ;
+                END
+            '''))
+
+        c.execute(self._sql(
+            '''
+                CREATE TRIGGER IF NOT EXISTS %(db)s.%(nuts)s_remove_coverage
+                BEFORE DELETE ON %(nuts)s FOR EACH ROW
+                BEGIN
+                    INSERT OR IGNORE INTO %(coverage)s VALUES
+                    (old.kind_codes_id, old.tmin_seconds, old.tmin_offset, 0)
+                    ;
+                    UPDATE %(coverage)s
+                    SET step = step - 1
+                    WHERE old.kind_codes_id == %(coverage)s.kind_codes_id
+                        AND old.tmin_seconds == %(coverage)s.time_seconds
+                        AND old.tmin_offset == %(coverage)s.time_offset
+                    ;
+                    INSERT OR IGNORE INTO %(coverage)s VALUES
+                    (old.kind_codes_id, old.tmax_seconds, old.tmax_offset, 0)
+                    ;
+                    UPDATE %(coverage)s
+                    SET step = step + 1
+                    WHERE old.kind_codes_id == %(coverage)s.kind_codes_id
+                        AND old.tmax_seconds == %(coverage)s.time_seconds
+                        AND old.tmax_offset == %(coverage)s.time_offset
+                    ;
+                    DELETE FROM %(coverage)s
+                        WHERE old.kind_codes_id == %(coverage)s.kind_codes_id
+                            AND old.tmin_seconds == %(coverage)s.time_seconds
+                            AND old.tmin_offset == %(coverage)s.time_offset
+                            AND step == 0
+                    ;
+                    DELETE FROM %(coverage)s
+                        WHERE old.kind_codes_id == %(coverage)s.kind_codes_id
+                            AND old.tmax_seconds == %(coverage)s.time_seconds
+                            AND old.tmax_offset == %(coverage)s.time_offset
+                            AND step == 0
+                    ;
+                END
+            '''))
+
     def _delete(self):
         '''Delete database tables associated with this squirrel.'''
 
@@ -881,6 +984,9 @@ class Squirrel(Selection):
                 DROP TRIGGER %(db)s.%(nuts)s_dec_kind_codes;
                 DROP TABLE %(db)s.%(nuts)s;
                 DROP TABLE %(db)s.%(kind_codes_count)s;
+                DROP TRIGGER IF EXISTS %(db)s.%(nuts)s_add_coverage;
+                DROP TRIGGER IF EXISTS %(db)s.%(nuts)s_remove_coverage;
+                DROP TABLE IF EXISTS %(db)s.%(coverage)s;
                 '''.strip().splitlines():
 
             self._conn.execute(self._sql(s))
@@ -950,7 +1056,7 @@ class Squirrel(Selection):
 
         kind_mask = model.to_kind_mask(kinds)
 
-        with self.progress.show_in_terminal:
+        with progress.show_in_terminal:
             Selection.add(
                 self, self.iter_expand_dirs(file_paths), kind_mask, format)
 
@@ -993,12 +1099,11 @@ class Squirrel(Selection):
                 self,
                 content=[],
                 skip_unchanged=True,
-                check=check,
-                progress=self.progress):
+                check=check):
             pass
 
     def _update_nuts(self):
-        task = self.progress.task('Aggregating selection')
+        task = make_task('Aggregating selection')
         self._conn.set_progress_handler(task.update, 100000)
         nrows = self._conn.execute(self._sql(
             '''
@@ -1065,7 +1170,8 @@ class Squirrel(Selection):
         return tmin, tmax, codes
 
     def iter_nuts(
-            self, kind=None, tmin=None, tmax=None, codes=None, naiv=False):
+            self, kind=None, tmin=None, tmax=None, codes=None, naiv=False,
+            kind_codes_ids=None):
 
         '''
         Iterate content matching given contraints.
@@ -1149,15 +1255,23 @@ class Squirrel(Selection):
             args.append(tmin_seconds)
 
         elif kind is not None:
-            extra_cond.append('%(db)s.%(nuts)s.kind_id == ?')
+            extra_cond.append('kind_codes.kind_id == ?')
             args.append(to_kind_id(kind))
 
         if codes is not None:
             pats = codes_patterns_for_kind(kind, codes)
+            if pats:
+                extra_cond.append(
+                    ' ( %s ) ' % ' OR '.join(
+                        ('kind_codes.codes GLOB ?',) * len(pats)))
+                args.extend(separator.join(pat) for pat in pats)
+
+        if kind_codes_ids is not None:
             extra_cond.append(
-                ' ( %s ) ' % ' OR '.join(
-                    ('kind_codes.codes GLOB ?',) * len(pats)))
-            args.extend(separator.join(pat) for pat in pats)
+                ' ( kind_codes.kind_codes_id IN ( %s ) ) ' % ', '.join(
+                    '?'*len(kind_codes_ids)))
+
+            args.extend(kind_codes_ids)
 
         sql = ('''
             SELECT
@@ -1252,10 +1366,11 @@ class Squirrel(Selection):
         args.append(tmin_seconds)
         if codes is not None:
             pats = codes_patterns_for_kind(kind, codes)
-            extra_cond.append(
-                ' ( %s ) ' % ' OR '.join(
-                    ('kind_codes.codes GLOB ?',) * len(pats)))
-            args.extend(separator.join(pat) for pat in pats)
+            if pats:
+                extra_cond.append(
+                    ' ( %s ) ' % ' OR '.join(
+                        ('kind_codes.codes GLOB ?',) * len(pats)))
+                args.extend(separator.join(pat) for pat in pats)
 
         if file_path is not None:
             extra_cond.append('files.path == ?')
@@ -1332,26 +1447,26 @@ class Squirrel(Selection):
         :returns: (tmin, tmax)
         '''
         sql = self._sql('''
-            SELECT MIN(tmin_seconds + tmin_offset)
+            SELECT MIN(tmin_seconds), MIN(tmin_offset)
             FROM %(db)s.%(nuts)s WHERE
             tmin_seconds == (SELECT MIN(tmin_seconds) FROM %(db)s.%(nuts)s)
         ''')
         tmin = None
-        for row in self._conn.execute(sql):
-            tmin = row[0]
+        for tmin_seconds, tmin_offset in self._conn.execute(sql):
+            tmin = model.tjoin(tmin_seconds, tmin_offset, 0.0)
 
         sql = self._sql('''
-            SELECT MAX(tmax_seconds + tmax_offset)
+            SELECT MAX(tmax_seconds), MAX(tmax_offset)
             FROM %(db)s.%(nuts)s WHERE
             tmax_seconds == (SELECT MAX(tmax_seconds) FROM %(db)s.%(nuts)s)
         ''')
         tmax = None
-        for row in self._conn.execute(sql):
-            tmax = row[0]
+        for (tmax_seconds, tmax_offset) in self._conn.execute(sql):
+            tmax = model.tjoin(tmax_seconds, tmax_offset, 0.0)
 
         return tmin, tmax
 
-    def get_waveform_deltat_span(self):
+    def get_deltat_span(self, kind):
         '''
         Get min and max sampling interval of all waveform contents.
 
@@ -1359,13 +1474,16 @@ class Squirrel(Selection):
         '''
 
         deltats = [
-            deltat for deltat in self.get_deltats(kind='waveform')
+            deltat for deltat in self.get_deltats(kind)
             if deltat is not None]
 
         if deltats:
             return min(deltats), max(deltats)
         else:
             return None, None
+
+    def get_waveform_deltat_span(self):
+        return self.get_deltat_span('waveform')
 
     def iter_kinds(self, codes=None):
         '''
@@ -1485,6 +1603,26 @@ class Squirrel(Selection):
         else:
             return d
 
+    def resolve_kind_codes(self, kind, codes_list):
+
+        args = [to_kind_id(kind)]
+        pats = []
+        for codes in codes_list:
+            pats.extend(codes_patterns_for_kind(kind, codes))
+
+        codes_cond = ' ( %s ) ' % ' OR '.join(
+                ('kind_codes.codes GLOB ?',) * len(pats))
+
+        args.extend(separator.join(pat) for pat in pats)
+
+        sql = self._sql('''
+            SELECT kind_codes_id, codes, deltat FROM kind_codes
+            WHERE
+                kind_id == ?
+                AND ''' + codes_cond)
+
+        return list(map(list, self._conn.execute(sql, args)))
+
     def update(self, constraint=None, **kwargs):
         '''
         Update inventory of remote content for a given selection.
@@ -1571,6 +1709,7 @@ class Squirrel(Selection):
 
         content_cache = self._content_caches[cache]
         if not content_cache.has(nut):
+
             for nut_loaded in io.iload(
                     nut.file_path,
                     segment=nut.file_segment,
@@ -1831,6 +1970,109 @@ class Squirrel(Selection):
     def __str__(self):
         return str(self.get_stats())
 
+    def get_coverage(
+            self, kind, tmin=None, tmax=None, codes_list=None, limit=None):
+
+        tmin_seconds, tmin_offset = model.tsplit(tmin)
+        tmax_seconds, tmax_offset = model.tsplit(tmax)
+
+        kdata_all = []
+        for pattern in codes_list:
+            kdata = self.resolve_kind_codes(kind, [pattern])
+            for row in kdata:
+                row[0:0] = [pattern]
+
+            kdata_all.extend(kdata)
+
+        kind_codes_ids = [x[1] for x in kdata_all]
+
+        counts_at_tmin = {}
+        if tmin is not None:
+            for nut in self.iter_nuts(
+                    kind, tmin, tmin, kind_codes_ids=kind_codes_ids):
+
+                codes = nut.codes
+                if codes not in counts_at_tmin:
+                    counts_at_tmin[codes] = 0
+
+                counts_at_tmin[codes] += 1
+
+        coverage = []
+        for pattern, kind_codes_id, codes, deltat in kdata_all:
+            entry = [pattern, codes, deltat, None, None, []]
+            for i, order in [(0, 'ASC'), (1, 'DESC')]:
+                sql = self._sql('''
+                    SELECT
+                        time_seconds,
+                        time_offset
+                    FROM %(db)s.%(coverage)s
+                    WHERE
+                        kind_codes_id == ?
+                    ORDER BY
+                        kind_codes_id ''' + order + ''',
+                        time_seconds ''' + order + ''',
+                        time_offset ''' + order + '''
+                    LIMIT 1
+                ''')
+
+                for row in self._conn.execute(sql, [kind_codes_id]):
+                    entry[3+i] = model.tjoin(row[0], row[1], deltat)
+
+            args = [kind_codes_id]
+
+            sql_time = ''
+            if tmin is not None:
+                # intentionally < because (== tmin) is queried from nuts
+                sql_time += ' AND ( ? < time_seconds ' \
+                    'OR ( ? == time_seconds AND ? < time_offset ) ) '
+                args.extend([tmin_seconds, tmin_seconds, tmin_offset])
+
+            if tmax is not None:
+                sql_time += ' AND ( time_seconds < ? ' \
+                    'OR ( ? == time_seconds AND time_offset < ? ) ) '
+                args.extend([tmax_seconds, tmax_seconds, tmax_offset])
+
+            sql_limit = ''
+            if limit is not None:
+                sql_limit = ' LIMIT ?'
+                args.append(limit)
+
+            sql = self._sql('''
+                SELECT
+                    time_seconds,
+                    time_offset,
+                    step
+                FROM %(db)s.%(coverage)s
+                WHERE
+                    kind_codes_id == ?
+                    ''' + sql_time + '''
+                ORDER BY
+                    kind_codes_id,
+                    time_seconds,
+                    time_offset
+            ''' + sql_limit)
+
+            rows = list(self._conn.execute(sql, args))
+
+            if limit is not None and len(rows) == limit:
+                entry[-1] = None
+            else:
+                counts = counts_at_tmin.get(codes, 0)
+                if tmin is not None:
+                    entry[-1].append((tmin, counts))
+
+                for row in rows:
+                    t = model.tjoin(row[0], row[1], deltat)
+                    counts += row[2]
+                    entry[-1].append((t, counts))
+
+                if tmax is not None:
+                    entry[-1].append((tmax, counts))
+
+            coverage.append(entry)
+
+        return coverage
+
 
 class DatabaseStats(Object):
     '''
@@ -1874,7 +2116,7 @@ Available codes:               %s
 Number of files:               %i
 Total size of known files:     %s
 Number of index nuts:          %i
-Available nut kinds:           %s''' % (
+Available content kinds:       %s''' % (
             scodes,
             self.nfiles,
             util.human_bytesize(self.total_size),
@@ -1977,9 +2219,9 @@ class Database(object):
                         kind_id integer,
                         kind_codes_id integer,
                         tmin_seconds integer,
-                        tmin_offset float,
+                        tmin_offset integer,
                         tmax_seconds integer,
-                        tmax_offset float,
+                        tmax_offset integer,
                         kscale integer)
                 '''))
 

@@ -27,8 +27,8 @@ Pyrocko Squirrel - Prompt seismological data access with a fluffy tail.
 
 This is `squirrel`, a command-line front-end to the Squirrel data access
 infrastructure. The Squirrel infrastructure offers meta-data caching, blazingly
-fast data lookup for large datasets and transparent online data download to all
-application building on it.
+fast data lookup for large datasets and transparent online data download to
+applications building on it.
 
 In most cases, the Squirrel does its business discretely under the hood and
 does not require human interaction or awareness. However, using this tool, some
@@ -39,7 +39,7 @@ datasets, (3), pre-scanning/indexing of file collections. It can also be used
 to inspect various aspects of a data collection.
 
 This tool's functionality is available through several subcommands. Run
-`squirrel [subcommand] --help` to get help further help. ''')
+`squirrel [subcommand] --help` to get further help.''')
 
     parser.add_argument(
         '--help', '-h',

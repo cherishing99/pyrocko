@@ -235,7 +235,7 @@ class SquirrelTestCase(unittest.TestCase):
             assert sq.get_nfiles() == 2
             assert sq.get_nnuts() == 2
 
-            assert sq.get_time_span() == (0., 1.)
+            assert sq.get_time_span() == (0., 2.)
 
             f = StringIO()
             sq.print_tables(stream=f)
@@ -254,7 +254,8 @@ class SquirrelTestCase(unittest.TestCase):
             assert len(sq.get_nuts('waveform', tmin=-10., tmax=10.)) == 2
             assert len(sq.get_nuts('waveform', tmin=-1., tmax=0.)) == 0
             assert len(sq.get_nuts('waveform', tmin=0., tmax=1.)) == 2
-            assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 0
+            assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 2
+            assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 0
             assert len(sq.get_nuts('waveform', tmin=-1., tmax=0.5)) == 2
             assert len(sq.get_nuts('waveform', tmin=0.5, tmax=1.5)) == 2
             assert len(sq.get_nuts('waveform', tmin=0.2, tmax=0.7)) == 2
@@ -269,7 +270,8 @@ class SquirrelTestCase(unittest.TestCase):
 
             assert len(sq.get_nuts('waveform', tmin=0., tmax=1.)) == 0
             assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 2
-            assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 0
+            assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 2
+            assert len(sq.get_nuts('waveform', tmin=3., tmax=4.)) == 0
 
             shutil.rmtree(tempdir)
 
@@ -292,11 +294,13 @@ class SquirrelTestCase(unittest.TestCase):
             fns = make_files(3)
             assert len(sq.get_nuts('waveform', tmin=1., tmax=2.)) == 0
             assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 2
-            assert len(sq.get_nuts('waveform', tmin=3., tmax=4.)) == 0
+            assert len(sq.get_nuts('waveform', tmin=3., tmax=4.)) == 2
+            assert len(sq.get_nuts('waveform', tmin=4., tmax=5.)) == 0
             sq.reload()
             assert len(sq.get_nuts('waveform', tmin=2., tmax=3.)) == 0
             assert len(sq.get_nuts('waveform', tmin=3., tmax=4.)) == 2
-            assert len(sq.get_nuts('waveform', tmin=4., tmax=5.)) == 0
+            assert len(sq.get_nuts('waveform', tmin=4., tmax=5.)) == 2
+            assert len(sq.get_nuts('waveform', tmin=5., tmax=6.)) == 0
 
             sq.remove(fns)
             assert sq.get_nfiles() == 0
@@ -383,11 +387,13 @@ class SquirrelTestCase(unittest.TestCase):
         txs[0] = tmin_g
         txs[-1] = tmax_g
 
+        kind = 'undefined'
+
         all_nuts = []
         for it in range(nt):
             path = 'virtual:test_chop_%i' % it
             tmin = txs[it]
-            tmax = txs[it+1]
+            tmax = txs[it+1] - 10.
             tmin_seconds, tmin_offset = squirrel.model.tsplit(tmin)
             tmax_seconds, tmax_offset = squirrel.model.tsplit(tmax)
             for file_element in range(ne):
@@ -402,7 +408,7 @@ class SquirrelTestCase(unittest.TestCase):
                     tmax_seconds=tmax_seconds,
                     tmax_offset=tmax_offset,
                     deltat=[0.5, 1.0][file_element % 2],
-                    kind_id=squirrel.to_kind_id('waveform')))
+                    kind_id=squirrel.to_kind_id(kind)))
 
         squirrel.io.backends.virtual.add_nuts(all_nuts)
 
@@ -455,7 +461,7 @@ class SquirrelTestCase(unittest.TestCase):
 
                 expect.append(
                     len(list(sq.iter_nuts(
-                        'waveform', tmin=tmin, tmax=tmax, naiv=True))))
+                        kind, tmin=tmin, tmax=tmax, naiv=True))))
                 assert expect[-1] >= 10
 
         with bench.run('undig span'):
@@ -464,10 +470,19 @@ class SquirrelTestCase(unittest.TestCase):
                 tmax = tmin_g + (iwin+1) * tinc
 
                 assert len(sq.get_nuts(
-                    'waveform', tmin=tmin, tmax=tmax)) == expect[iwin]
+                    kind, tmin=tmin, tmax=tmax)) == expect[iwin]
 
         with bench.run('get deltat span'):
-            assert sq.get_waveform_deltat_span() == (0.5, 1.0)
+            assert sq.get_deltat_span(kind) == (0.5, 1.0)
+
+        with bench.run('get coverage'):
+            for codes in sq.get_codes():
+                sq.get_coverage(kind, None, None, codes, limit=10)
+
+        sq._conn.execute(sq._sql('DROP INDEX %(db)s.%(coverage)s_time'))
+        with bench.run('get coverage (no index)'):
+            for codes in sq.get_codes():
+                sq.get_coverage(kind, None, None, codes, limit=10)
 
         return bench
 
@@ -786,62 +801,6 @@ class SquirrelTestCase(unittest.TestCase):
         assert list(sq.pile.gather_keys(
             gather=lambda tr: tr.station,
             selector=lambda tr: tr.channel == 'BHZ')) == ['LGG01']
-
-    def test_terminal_status_window(self):
-
-        frames = []
-        for iframe in range(11):
-            lines = []
-            for iline in range(5-abs(iframe-5)):
-                lines.append(str(iframe) * (iframe % 4))
-
-            frames.append(lines)
-
-        from pyrocko.squirrel import progress
-        util.setup_logging('x', 'info')
-
-        with progress.TerminalStatusWindow() as t:
-            for iframe, lines in enumerate(frames):
-                logger.info('frame %i' % iframe)
-                t.draw(lines)
-                time.sleep(0.1)
-
-    def test_progress(self):
-        from pyrocko.squirrel import progress
-
-        p = progress.Progress()
-
-        t1 = p.task('a task')
-        t2 = p.task('another task', 500)
-
-        with p.show_in_terminal:
-
-            s = [0, 0, 0]
-            for i in range(1000):
-                if i > 300:
-                    s[0] += 1
-                    t1.update(s[0])
-
-                s[1] += 2
-
-                if i == 500:
-                    t2.done()
-
-                if i == 200:
-                    t3 = p.task('late task', 20)
-
-                if i > 200 and i % 5 == 0:
-                    s[2] += 1
-                    t3.update(s[2])
-
-                t2.update(s[1])
-                if s[2] == 20:
-                    t3.done()
-
-                time.sleep(.0005)
-
-                if s[0] == 666:
-                    t1.fail('oh damn...')
 
 
 if __name__ == "__main__":

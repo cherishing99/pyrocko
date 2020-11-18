@@ -4,6 +4,8 @@ import logging
 from builtins import str as newstr
 
 from pyrocko.io_common import FileLoadError
+from pyrocko.progress import progress
+
 from .backends import \
     mseed, sac, datacube, stationxml, textfiles, virtual, yaml
 
@@ -13,6 +15,11 @@ backend_modules = [mseed, sac, datacube, stationxml, textfiles, virtual, yaml]
 
 
 logger = logging.getLogger('pyrocko.sqirrel.io')
+
+
+def make_task(*args, **kwargs):
+    kwargs['logger'] = logger
+    return progress.task(*args, **kwargs)
 
 
 def update_format_providers():
@@ -116,8 +123,7 @@ def iload(
         check=True,
         commit=True,
         skip_unchanged=False,
-        content=g_content_kinds,
-        progress=None):
+        content=g_content_kinds):
 
     '''
     Iteratively load content or index/reindex meta-information from files.
@@ -195,16 +201,18 @@ def iload(
     else:
         it = (((format, path), []) for path in paths)
 
+    task = None
     if progress is not None:
         if not kind_ids:
-            task = progress.task('Indexing files')
+            task = make_task('Indexing files')
         else:
-            task = progress.task('Loading files')
+            task = make_task('Loading files')
 
     n_files = 0
     for (format, path), old_nuts in it:
         if task is not None:
-            condition = '(nuts: %i new, %i old) %s' % (n_load, n_db, path)
+            condition = '(nuts: %i from file, %i from cache) %s' % (
+                n_load, n_db, path)
             task.update(n_files, condition)
 
         n_files += 1
@@ -276,7 +284,7 @@ def iload(
                 database.reset(path)
 
     if task is not None:
-        condition = '(nuts: %i new, %i old)' % (n_load, n_db)
+        condition = '(nuts: %i from file, %i from cache)' % (n_load, n_db)
         task.update(n_files, condition)
         task.done(condition)
 
@@ -287,7 +295,7 @@ def iload(
         if temp_selection:
             del temp_selection
 
-    logger.debug('iload: from db: %i, from files: %i, files: %i' % (
+    logger.debug('iload: from cache: %i, from files: %i, files: %i' % (
         n_db, n_load, n_files))
 
 

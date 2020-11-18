@@ -109,13 +109,17 @@ def time_or_none_to_str(x):
         return util.time_to_str(x)
 
 
+g_offset_time_unit_inv = 1000000000
+g_offset_time_unit = 1.0 / g_offset_time_unit_inv
+
+
 def tsplit(t):
     if t is None:
         return None, 0.0
 
     seconds = num.floor(t)
     offset = t - seconds
-    return int(seconds), float(offset)
+    return int(seconds), int(round(offset * g_offset_time_unit_inv))
 
 
 def tjoin(seconds, offset, deltat):
@@ -123,9 +127,9 @@ def tjoin(seconds, offset, deltat):
         return None
 
     if deltat is not None and deltat < 1e-3:
-        return util.hpfloat(seconds) + util.hpfloat(offset)
+        return util.hpfloat(seconds) + util.hpfloat(offset*g_offset_time_unit)
     else:
-        return seconds + offset
+        return seconds + offset*g_offset_time_unit
 
 
 tscale_min = 1
@@ -491,9 +495,9 @@ class Nut(Object):
     codes = String.T()
 
     tmin_seconds = Timestamp.T()
-    tmin_offset = Float.T(default=0.0, optional=True)
+    tmin_offset = Int.T(default=0, optional=True)
     tmax_seconds = Timestamp.T()
-    tmax_offset = Float.T(default=0.0, optional=True)
+    tmax_offset = Int.T(default=0, optional=True)
 
     deltat = Float.T(default=0.0)
 
@@ -512,9 +516,9 @@ class Nut(Object):
             kind_id=0,
             codes='',
             tmin_seconds=None,
-            tmin_offset=0.0,
+            tmin_offset=0,
             tmax_seconds=None,
-            tmax_offset=0.0,
+            tmax_offset=0,
             deltat=None,
             content=None,
             tmin=None,
@@ -541,9 +545,9 @@ class Nut(Object):
             self.kind_id = int(kind_id)
             self.codes = str(codes)
             self.tmin_seconds = int_or_g_tmin(tmin_seconds)
-            self.tmin_offset = float(tmin_offset)
+            self.tmin_offset = int(tmin_offset)
             self.tmax_seconds = int_or_g_tmax(tmax_seconds)
-            self.tmax_offset = float(tmax_offset)
+            self.tmax_offset = int(tmax_offset)
             self.deltat = float_or_none(deltat)
             self.file_path = str_or_none(file_path)
             self.file_segment = int_or_none(file_segment)
@@ -695,11 +699,17 @@ class Nut(Object):
 
     @property
     def oneline(self):
-        return '%s, %s, %s - %s' % (
-            to_kind(self.kind_id),
-            '.'.join(self.codes.split(separator)),
-            util.time_to_str(self.tmin),
-            util.time_to_str(self.tmax))
+        if self.tmin == self.tmax:
+            ts = util.time_to_str(self.tmin)
+        else:
+            ts = '%s - %s' % (
+                util.time_to_str(self.tmin),
+                util.time_to_str(self.tmax))
+
+        return ' '.join((
+            ('%s,' % to_kind(self.kind_id)).ljust(9),
+            ('%s,' % '.'.join(self.codes.split(separator))).ljust(18),
+            ts))
 
 
 def make_waveform_nut(
