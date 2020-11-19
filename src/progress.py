@@ -139,18 +139,25 @@ class Task(object):
         self._group = group
 
     def __call__(self, it):
+        err = False
         try:
-            for i, obj in enumerate(it):
-                self.update(i)
+            n = 0
+            for obj in it:
+                self.update(n)
                 yield obj
+                n += 1
 
-            self.update(i+1)
+            self.update(n)
 
         except Exception:
-            self.fail()
+            err = True
+            raise
 
         finally:
-            self.done()
+            if err:
+                self.fail()
+            else:
+                self.done()
 
     def log(self, s):
         if self._logger is not None:
