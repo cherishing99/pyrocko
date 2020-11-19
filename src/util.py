@@ -1459,6 +1459,65 @@ class Anon(object):
             self.__dict__[k] = dict[k]
 
 
+def iter_select_files(paths, selector=None, regex=None, show_progress=True):
+    '''
+    Recursively select files (generator variant).
+
+    See :py:func:`select_files`.
+    '''
+
+    if show_progress:
+        progress_beg('selecting files...')
+        if logger.isEnabledFor(logging.DEBUG):
+            sys.stderr.write('\n')
+
+    ngood = 0
+    if regex:
+        rselector = re.compile(regex)
+
+    if regex:
+        def check(path):
+            logger.debug("looking at filename: '%s'" % path)
+            m = rselector.search(path)
+            if not m:
+                logger.debug("   regex '%s' does not match." % regex)
+                return False
+
+            infos = Anon(**m.groupdict())
+            logger.debug("   regex '%s' matches." % regex)
+            for k, v in m.groupdict().items():
+                logger.debug(
+                    "      attribute '%s' has value '%s'" % (k, v))
+            if selector is None or selector(infos):
+                return True
+            else:
+                logger.debug('   not selected.')
+                return False
+
+    else:
+        def check(path):
+            return True
+
+    if isinstance(paths, str):
+        paths = [paths]
+
+    for path in paths:
+        if os.path.isdir(path):
+            for (dirpath, dirnames, filenames) in os.walk(path):
+                for filename in filenames:
+                    path = op.join(dirpath, filename)
+                    if check(path):
+                        yield os.path.abspath(path)
+                        ngood += 1
+        else:
+            if check(path):
+                yield os.path.abspath(path)
+                ngood += 1
+
+    if show_progress:
+        progress_end('%i file%s selected.' % (ngood, plural_s(ngood)))
+
+
 def select_files(paths, selector=None, regex=None, show_progress=True):
     '''
     Recursively select files.
@@ -1491,49 +1550,7 @@ def select_files(paths, selector=None, regex=None, show_progress=True):
             regex=r'(?P<year>\\d\\d\\d\\d)\\.(?P<doy>\\d\\d\\d)$',
             selector=(lambda x: int(x.year) == 2009))
     '''
-
-    if show_progress:
-        progress_beg('selecting files...')
-        if logger.isEnabledFor(logging.DEBUG):
-            sys.stderr.write('\n')
-
-    good = []
-    if regex:
-        rselector = re.compile(regex)
-
-    def addfile(path):
-        if regex:
-            logger.debug("looking at filename: '%s'" % path)
-            m = rselector.search(path)
-            if m:
-                infos = Anon(**m.groupdict())
-                logger.debug("   regex '%s' matches." % regex)
-                for k, v in m.groupdict().items():
-                    logger.debug(
-                        "      attribute '%s' has value '%s'" % (k, v))
-                if selector is None or selector(infos):
-                    good.append(os.path.abspath(path))
-
-            else:
-                logger.debug("   regex '%s' does not match." % regex)
-        else:
-            good.append(os.path.abspath(path))
-
-    if isinstance(paths, str):
-        paths = [paths]
-
-    for path in paths:
-        if os.path.isdir(path):
-            for (dirpath, dirnames, filenames) in os.walk(path):
-                for filename in filenames:
-                    addfile(op.join(dirpath, filename))
-        else:
-            addfile(path)
-
-    if show_progress:
-        progress_end('%i file%s selected.' % (len(good), plural_s(len(good))))
-
-    return good
+    return list(iter_select_files(paths, selector, regex, show_progress))
 
 
 def base36encode(number, alphabet='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'):

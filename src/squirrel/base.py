@@ -348,18 +348,19 @@ class Selection(object):
         if isinstance(file_paths, str):
             file_paths = [file_paths]
 
+        task = make_task('Gathering file names')
+        file_paths = task(file_paths)
         file_paths = util.short_to_list(100, file_paths)
 
         try:
             if len(file_paths) < 100:
                 # short non-iterator file_paths: can do without temp table
 
-                task = make_task('Gathering file names')
                 self._conn.executemany(
                     '''
                         INSERT OR IGNORE INTO files
                         VALUES (NULL, ?, NULL, NULL, NULL)
-                    ''', ((x,) for x in task(file_paths)))
+                    ''', ((x,) for x in file_paths))
 
                 task = make_task('Preparing database', 3)
                 task.update(0, condition='pruning stale information')
@@ -412,7 +413,7 @@ class Selection(object):
 
         self._conn.executemany(self._sql(
             'INSERT INTO temp.%(bulkinsert)s VALUES (?)'),
-            ((x,) for x in task(file_paths)))
+            ((x,) for x in file_paths))
 
         task = make_task('Preparing database', 5)
         task.update(0, condition='adding file names to database')
@@ -1023,14 +1024,10 @@ class Squirrel(Selection):
                 m[table_name] % self._names, stream=stream)
 
     def iter_expand_dirs(self, file_paths):
-        for path in file_paths:
-            if os.path.isdir(path):
-                dpaths = sorted(util.select_files([path], show_progress=False))
-                for dpath in dpaths:
-                    yield dpath
-
-            else:
-                yield path
+        for part1 in file_paths:
+            for (part2, dirnames, filenames) in os.walk(part1):
+                for filename in sorted(filenames):
+                    yield os.path.join(part1, part2, filename)
 
     def add(self, file_paths, kinds=None, format='detect', check=True):
         '''
