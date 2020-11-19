@@ -54,8 +54,6 @@ class TerminalStatusWindow(object):
 
     def start(self):
         sx, sy = self._terminal_size
-        print(file=sys.stderr)
-        self.flush()
         self._state = 1
 
     def stop(self):
