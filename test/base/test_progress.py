@@ -15,6 +15,7 @@ class ProgressTestCase(unittest.TestCase):
         self.test_terminal_status_window(slow=True)
 
     def test_terminal_status_window(self, slow=False):
+        util.setup_logging('test_progress', 'info')
 
         frames = []
         for iframe in range(11):
@@ -23,8 +24,6 @@ class ProgressTestCase(unittest.TestCase):
                 lines.append(str(iframe) * (iframe % 4))
 
             frames.append(lines)
-
-        util.setup_logging('x', 'info')
 
         with progress.TerminalStatusWindow() as t:
             for iframe, lines in enumerate(frames):
@@ -36,17 +35,17 @@ class ProgressTestCase(unittest.TestCase):
                     time.sleep(0.1)
 
     def demo_progress(self):
+        util.setup_logging('test_progress', 'info')
         self.test_progress(slow=True)
 
     def test_progress(self, slow=False):
-        util.setup_logging('x', 'info')
 
         p = progress.Progress()
 
         t1 = p.task('a task', logger=logger)
         t2 = p.task('another task', 500, logger=logger)
 
-        with p.show_in_terminal:
+        with p.view():
 
             s = [0, 0, 0]
             for i in range(1000):
