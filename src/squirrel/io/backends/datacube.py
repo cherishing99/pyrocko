@@ -26,6 +26,8 @@ def iload(format, file_path, segment, content):
 
     for itr, tr in enumerate(datacube.iload(file_path, load_data=load_data)):
 
+        nsamples = int(round((tr.tmax - tr.tmin) / tr.deltat)) + 1
+
         nut = model.make_waveform_nut(
             file_segment=0,
             file_element=itr,
@@ -35,7 +37,7 @@ def iload(format, file_path, segment, content):
             location=tr.location,
             channel=tr.channel,
             tmin=tr.tmin,
-            tmax=tr.tmax,
+            tmax=tr.tmin + tr.deltat * nsamples,
             deltat=tr.deltat)
 
         if 'waveform' in content:

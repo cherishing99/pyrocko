@@ -132,7 +132,7 @@ def setup_logging(programname='pyrocko', levelname='warning'):
 
     logging.basicConfig(
         level=levels[levelname],
-        format=programname+':%(name)-20s - %(levelname)-8s - %(message)s')
+        format=programname+':%(name)-25s - %(levelname)-8s - %(message)s')
 
 
 def subprocess_setup_logging_args():
@@ -1459,7 +1459,13 @@ class Anon(object):
             self.__dict__[k] = dict[k]
 
 
-def iter_select_files(paths, selector=None, regex=None, show_progress=True):
+def iter_select_files(
+        paths,
+        selector=None,
+        regex=None,
+        show_progress=True,
+        pass_through=None):
+
     '''
     Recursively select files (generator variant).
 
@@ -1502,7 +1508,11 @@ def iter_select_files(paths, selector=None, regex=None, show_progress=True):
         paths = [paths]
 
     for path in paths:
-        if os.path.isdir(path):
+        if pass_through and pass_through(path):
+            if check(path):
+                yield path
+
+        elif os.path.isdir(path):
             for (dirpath, dirnames, filenames) in os.walk(path):
                 for filename in filenames:
                     path = op.join(dirpath, filename)

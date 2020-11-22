@@ -13,10 +13,14 @@ import numpy as num
 
 from .. import common
 from pyrocko import squirrel, util, pile, io, trace, model as pmodel
+from pyrocko import progress
 try:
     from StringIO import StringIO
 except ImportError:
     from io import StringIO
+
+
+progress.g_force_viewer_off = True
 
 
 logger = logging.getLogger('test_squirrel.py')
@@ -656,7 +660,6 @@ class SquirrelTestCase(unittest.TestCase):
 
     @common.require_internet
     def test_fdsn_source(self):
-        util.setup_logging('test_squirrel', 'info')
         tmin = util.str_to_time('2018-01-01 00:00:00')
         tmax = util.str_to_time('2018-01-01 02:00:00')
         database = squirrel.Database()
@@ -736,7 +739,6 @@ class SquirrelTestCase(unittest.TestCase):
 
     @common.require_internet
     def test_catalog_source(self):
-        util.setup_logging('test_squirrel', 'info')
         tmin = util.str_to_time('2017-01-01 00:00:00')
         tmax = util.str_to_time('2017-01-03 00:00:00')
         tmax2 = util.str_to_time('2017-01-06 00:00:00')

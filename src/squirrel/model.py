@@ -686,7 +686,7 @@ class Nut(Object):
             location=location,
             channel=channel,
             tmin=self.tmin,
-            tmax=self.tmax,
+            tmax=self.tmax-self.deltat,
             deltat=self.deltat)
 
     @property

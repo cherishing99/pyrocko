@@ -10,6 +10,7 @@ spinner = u'\u25dc\u25dd\u25de\u25df'
 skull = u'\u2620'
 check = u'\u2714'
 bar = u'[- ]'
+blocks = u'\u2588\u2589\u258a\u258b\u258c\u258d\u258e\u258f '
 
 ansi_up = u'\033[%iA'
 ansi_down = u'\033[%iB'
@@ -31,6 +32,9 @@ ansi_scroll_up = u'\033D'
 ansi_scroll_down = u'\033M'
 
 ansi_reset = u'\033c'
+
+
+g_force_viewer_off = False
 
 
 class TerminalStatusWindow(object):
@@ -112,9 +116,24 @@ class TerminalStatusWindow(object):
         self._end_show()
         self.flush()
 
-    @property
-    def active(self):
-        return self._state == 1
+
+class DummyStatusWindow(object):
+
+    def __init__(self, parent=None):
+        self._parent = parent
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.stop()
+
+    def stop(self):
+        if self._parent:
+            self._parent.hide()
+
+    def draw(self, lines):
+        pass
 
 
 class Task(object):
@@ -219,23 +238,30 @@ class Task(object):
         elif self._n is None:
             return '%i' % self._i
         else:
-            return '%i / %i%s' % (
+            nw = len(str(self._n))
+            return ('%' + str(nw) + 'i / %i%s') % (
                 self._i, self._n,
                 '  %3.0f%%' % ((100. * self._i) / self._n)
                 if self._state == 'working' else '')
 
     def _str_condition(self):
         if self._condition:
-            return ' - %s' % self._condition
+            return '%s' % self._condition
         else:
             return ''
 
     def _str_bar(self):
-        if self._state == 'working' and self._n is not None \
-                and self._i is not None:
-            nb = 30
-            ib = int(nb * float(self._i) / self._n)
-            return ' ' + bar[0] + bar[1] * ib + bar[2] * (nb - ib) + bar[3]
+        if self._state == 'working' and self._n and self._i is not None:
+            nb = 20
+            fb = nb * float(self._i) / self._n
+            ib = int(fb)
+            ip = int((fb - ib) * (len(blocks)-1))
+            s = blocks[0] * ib
+            if ib < nb:
+                s += blocks[-1-ip] + (nb - ib - 1) * blocks[-1] + blocks[-2]
+
+            # s = ' ' + bar[0] + bar[1] * ib + bar[2] * (nb - ib) + bar[3]
+            return s
         else:
             return ''
 
@@ -245,8 +271,9 @@ class Task(object):
             self._name,
             ' '.join([
                 self._str_progress(),
+                self._str_bar(),
                 self._str_condition(),
-                self._str_bar()]))
+                ]))
 
 
 class Progress(object):
@@ -259,9 +286,17 @@ class Progress(object):
         self._last_update = 0.0
         self._term = None
 
-    @property
-    def show_in_terminal(self):
-        self._term = TerminalStatusWindow(self)
+    def view(self, viewer='terminal'):
+        if g_force_viewer_off:
+            viewer = 'off'
+
+        if viewer == 'terminal':
+            self._term = TerminalStatusWindow(self)
+        elif viewer == 'off':
+            self._term = DummyStatusWindow(self)
+        else:
+            raise ValueError('Invalid viewer choice: %s' % viewer)
+
         return self._term
 
     def hide(self):
@@ -301,7 +336,7 @@ class Progress(object):
         lines = []
         for task_id in task_ids:
             task = self._tasks[task_id]
-            lines.append(str(task))
+            lines.extend(str(task).splitlines())
 
         return lines
 

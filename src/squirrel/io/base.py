@@ -1,5 +1,6 @@
 from __future__ import absolute_import, print_function
 
+import time
 import logging
 from builtins import str as newstr
 
@@ -201,23 +202,33 @@ def iload(
     else:
         it = (((format, path), []) for path in paths)
 
+    try:
+        n_files_total = len(it)
+    except TypeError:
+        n_files_total = None
+
     task = None
     if progress is not None:
         if not kind_ids:
-            task = make_task('Indexing files')
+            task = make_task('Indexing files', n_files_total)
         else:
-            task = make_task('Loading files')
+            task = make_task('Loading files', n_files_total)
 
     n_files = 0
+    tcommit = time.time()
+    database_modified = False
     for (format, path), old_nuts in it:
         if task is not None:
-            condition = '(nuts: %i from file, %i from cache) %s' % (
+            condition = '(nuts: %i from file, %i from cache)\n  %s' % (
                 n_load, n_db, path)
             task.update(n_files, condition)
 
         n_files += 1
-        if database and commit and n_files % 1000 == 0:
-            database.commit()
+        if database and commit and database_modified:
+            tnow = time.time()
+            if tnow - tcommit > 20. or n_files % 1000 == 0:
+                database.commit()
+                tcommit = tnow
 
         try:
             if check and old_nuts and old_nuts[0].file_modified():
@@ -277,11 +288,13 @@ def iload(
                         nut.file_mtime = mtime
 
                 database.dig(nuts)
+                database_modified = True
 
         except FileLoadError:
             logger.error('An error occured while reading file: %s' % path)
             if database:
                 database.reset(path)
+                database_modified = True
 
     if task is not None:
         condition = '(nuts: %i from file, %i from cache)' % (n_load, n_db)
@@ -289,7 +302,7 @@ def iload(
         task.done(condition)
 
     if database:
-        if commit:
+        if commit and database_modified:
             database.commit()
 
         if temp_selection:

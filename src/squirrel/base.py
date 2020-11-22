@@ -31,6 +31,19 @@ logger = logging.getLogger('pyrocko.squirrel.base')
 guts_prefix = 'pf'
 
 
+class GeneratorWithLen(object):
+
+    def __init__(self, gen, length):
+        self.gen = gen
+        self.length = length
+
+    def __len__(self):
+        return self.length
+
+    def __iter__(self):
+        return self.gen
+
+
 def make_task(*args, **kwargs):
     kwargs['logger'] = logger
     return progress.task(*args, **kwargs)
@@ -350,9 +363,9 @@ class Selection(object):
 
         task = make_task('Gathering file names')
         file_paths = task(file_paths)
-        file_paths = util.short_to_list(100, file_paths)
+        file_paths = util.short_to_list(200, file_paths)
 
-        if isinstance(file_paths, list) and len(file_paths) <= 100:
+        if isinstance(file_paths, list) and len(file_paths) <= 200:
 
             # short non-iterator file_paths: can do without temp table
 
@@ -361,7 +374,6 @@ class Selection(object):
                     INSERT OR IGNORE INTO files
                     VALUES (NULL, ?, NULL, NULL, NULL)
                 ''', ((x,) for x in file_paths))
-
 
             task = make_task('Preparing database', 3)
             task.update(0, condition='pruning stale information')
@@ -521,47 +533,56 @@ class Selection(object):
         else:
             where = ''
 
-        sql = self._sql('''
+        nfiles = execute_get1(self._conn, self._sql('''
             SELECT
-                %(db)s.%(file_states)s.format,
-                files.path,
-                files.format,
-                files.mtime,
-                files.size,
-                nuts.file_segment,
-                nuts.file_element,
-                kind_codes.kind_id,
-                kind_codes.codes,
-                nuts.tmin_seconds,
-                nuts.tmin_offset,
-                nuts.tmax_seconds,
-                nuts.tmax_offset,
-                kind_codes.deltat
+                COUNT()
             FROM %(db)s.%(file_states)s
-            LEFT OUTER JOIN files
-                ON %(db)s.%(file_states)s.file_id = files.file_id
-            LEFT OUTER JOIN nuts
-                ON files.file_id = nuts.file_id
-            LEFT OUTER JOIN kind_codes
-                ON nuts.kind_codes_id == kind_codes.kind_codes_id
-        ''' + where + '''
-            ORDER BY %(db)s.%(file_states)s.file_id
-        ''')
+        ''' + where), ())[0]
 
-        nuts = []
-        format_path = None
-        for values in self._conn.execute(sql):
-            if format_path is not None and values[1] != format_path[1]:
+        def gen():
+            sql = self._sql('''
+                SELECT
+                    %(db)s.%(file_states)s.format,
+                    files.path,
+                    files.format,
+                    files.mtime,
+                    files.size,
+                    nuts.file_segment,
+                    nuts.file_element,
+                    kind_codes.kind_id,
+                    kind_codes.codes,
+                    nuts.tmin_seconds,
+                    nuts.tmin_offset,
+                    nuts.tmax_seconds,
+                    nuts.tmax_offset,
+                    kind_codes.deltat
+                FROM %(db)s.%(file_states)s
+                LEFT OUTER JOIN files
+                    ON %(db)s.%(file_states)s.file_id = files.file_id
+                LEFT OUTER JOIN nuts
+                    ON files.file_id = nuts.file_id
+                LEFT OUTER JOIN kind_codes
+                    ON nuts.kind_codes_id == kind_codes.kind_codes_id
+            ''' + where + '''
+                ORDER BY %(db)s.%(file_states)s.file_id
+            ''')
+
+            nuts = []
+            format_path = None
+            for values in self._conn.execute(sql):
+                if format_path is not None and values[1] != format_path[1]:
+                    yield format_path, nuts
+                    nuts = []
+
+                if values[2] is not None:
+                    nuts.append(model.Nut(values_nocheck=values[1:]))
+
+                format_path = values[:2]
+
+            if format_path is not None:
                 yield format_path, nuts
-                nuts = []
 
-            if values[2] is not None:
-                nuts.append(model.Nut(values_nocheck=values[1:]))
-
-            format_path = values[:2]
-
-        if format_path is not None:
-            yield format_path, nuts
+        return GeneratorWithLen(gen(), nfiles)
 
     def iter_paths(self):
         sql = self._sql('''
@@ -1020,7 +1041,13 @@ class Squirrel(Selection):
             self._database.print_table(
                 m[table_name] % self._names, stream=stream)
 
-    def add(self, file_paths, kinds=None, format='detect', check=True):
+    def add(self,
+            file_paths,
+            kinds=None,
+            format='detect',
+            check=True,
+            progress_viewer='terminal'):
+
         '''
         Add files to the selection.
 
@@ -1036,6 +1063,7 @@ class Squirrel(Selection):
 
         Complexity: O(log N)
         '''
+
         if isinstance(kinds, str):
             kinds = (kinds,)
 
@@ -1044,10 +1072,13 @@ class Squirrel(Selection):
 
         kind_mask = model.to_kind_mask(kinds)
 
-        with progress.show_in_terminal:
+        with progress.view(progress_viewer):
             Selection.add(
                 self, util.iter_select_files(
-                    file_paths, show_progress=False), kind_mask, format)
+                    file_paths,
+                    show_progress=False,
+                    pass_through=lambda path: path.startswith('virtual:')
+                ), kind_mask, format)
 
             self._load(check)
             self._update_nuts()

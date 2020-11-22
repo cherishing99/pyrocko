@@ -52,7 +52,7 @@ def iload(format, file_path, segment, content):
         channel=nonetoempty(s.kcmpnm))
 
     tmin = s.get_ref_time() + s.b
-    tmax = tmin + s.delta * (s.npts-1)
+    tmax = tmin + s.delta * s.npts
 
     tspan = dict(
         tmin=tmin,
