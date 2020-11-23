@@ -2,7 +2,9 @@
 #
 # The Pyrocko Developers, 21st Century
 # ---|P------/S----------~Lg----------
+
 '''This module provides basic signal processing for seismic traces.'''
+
 from __future__ import division, absolute_import
 
 import time
