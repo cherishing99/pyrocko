@@ -109,8 +109,8 @@ class Trace(Content):
 
         self.agency, self.network, self.station, self.location, self.channel, \
             self.extra = [
-            reuse(x) for x in (
-                agency, network, station, location, channel, extra)]
+                reuse(x) for x in (
+                    agency, network, station, location, channel, extra)]
 
         self.tmin = tmin
         self.deltat = deltat
