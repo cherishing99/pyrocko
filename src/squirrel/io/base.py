@@ -199,7 +199,7 @@ def iload(
             selection = temp_selection
 
         if skip_unchanged:
-            selection._flag_modified(check)
+            selection.flag_modified(check)
             it = selection.undig_grouped(skip_unchanged=True)
         else:
             it = selection.undig_grouped()

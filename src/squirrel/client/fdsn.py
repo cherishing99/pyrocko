@@ -338,7 +338,7 @@ class FDSNSource(Source):
                         s_case = 'updated'
                     else:
                         os.unlink(fn_temp)
-                        squirrel.silent_touch(fn)
+                        squirrel.get_database().silent_touch(fn)
                         s_case = 'upstream unchanged'
 
                 else:

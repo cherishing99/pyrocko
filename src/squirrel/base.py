@@ -154,18 +154,12 @@ def blocks(tmin, tmax, deltat, nsamples_block=100000):
 def gaps(avail, tmin, tmax):
     assert tmin < tmax
 
-    # f.next()
-    # f.draw_span(tmin, tmax, 'purple')
-    # f.next()
-
     data = [(tmax, 1), (tmin, -1)]
     for (tmin_a, tmax_a) in avail:
-        # f.draw_span(tmin_a, tmax_a, 'cyan')
         assert tmin_a < tmax_a
         data.append((tmin_a, 1))
         data.append((tmax_a, -1))
 
-    # f.next()
     data.sort()
     s = 1
     gaps = []
@@ -180,10 +174,6 @@ def gaps(avail, tmin, tmax):
 
         s += x
 
-    # for tmin, tmax in gaps:
-    #     f.draw_span(tmin, tmax, 'pink')
-    #
-    # f.next()
     return gaps
 
 
@@ -194,17 +184,32 @@ def order_key(order):
 class Selection(object):
 
     '''
-    Database backed file selection.
+    Database backed file selection (base class for :py:class:`Squirrel`).
 
     :param database: :py:class:`Database` object or path to database
     :param str persistent: if given a name, create a persistent selection
+
+    In the Squirrel framework, a selection is conceptually a list of files to
+    be made available in the application. Instead of using
+    :py:class:`Selection` directly, user applications should usually use its
+    subclass :py:class:`Squirrel` which adds content indexes to the selection
+    and provides high level data querying.
 
     By default, a temporary table in the database is created to hold the names
     of the files in the selection. This table is only visible inside the
     application which created it. If a name is given to ``persistent``, a named
     selection is created, which is visible also in other applications using the
-    same database. Paths of files can be added to the selection using the
-    :py:meth:`add` method.
+    same database.
+
+    Besides the file names, desired content kind masks and file format
+    indications are stored in the selection's database table to make the user
+    choice regarding these options persistent on a per-file basis. Book-keeping
+    on whether files are unknown, known or if modification checks are forced is
+    also handled in the selection's table.
+
+    Paths of files can be added to the selection using the :py:meth:`add`
+    method and removed with :py:meth:`remove`. :py:meth:`undig_grouped` can be
+    used to iterate over all content belonging to the selection.
     '''
 
     def __init__(self, database, persistent=None):
@@ -278,35 +283,6 @@ class Selection(object):
             'DROP TABLE %(db)s.%(file_states)s'))
 
         self._conn.commit()
-
-    def silent_touch(self, path):
-        '''
-        Update modification time of file without initiating reindexing.
-
-        Useful to prolong validity period of data with expiration date.
-        '''
-
-        c = self._conn
-        with c:
-
-            sql = 'SELECT format, size FROM files WHERE path = ?'
-            fmt, size = execute_get1(c, sql, (path,))
-
-            mod = io.get_backend(fmt)
-            mod.touch(path)
-            file_stats = mod.get_stats(path)
-
-            if file_stats[1] != size:
-                raise FileLoadError(
-                    'Silent update for file "%s" failed: size has changed.'
-                    % path)
-
-            sql = '''
-                UPDATE files
-                SET mtime = ?
-                WHERE path = ?
-            '''
-            c.execute(sql, (file_stats[0], path))
 
     def add(
             self,
@@ -482,7 +458,7 @@ class Selection(object):
         Get content inventory of all files in selection.
 
         :param: skip_unchanged: if ``True`` only inventory of modified files
-            is yielded (:py:meth:`_flag_modified` must be called beforehand).
+            is yielded (:py:meth:`flag_modified` must be called beforehand).
 
         This generator yields tuples ``((format, path), nuts)`` where ``path``
         is the path to the file, ``format`` is the format assignation or
@@ -548,6 +524,12 @@ class Selection(object):
         return GeneratorWithLen(gen(), nfiles)
 
     def iter_paths(self):
+        '''
+        Iterate over all file paths currently belonging to the selection.
+
+        :returns: iterator yielding file paths
+        '''
+
         sql = self._sql('''
             SELECT
                 files.path
@@ -560,7 +542,15 @@ class Selection(object):
         for values in self._conn.execute(sql):
             yield values[0]
 
-    def _flag_modified(self, check=True):
+    def get_paths(self):
+        '''
+        Get all file paths currently belonging to the selection.
+
+        :returns: list of file paths
+        '''
+        return list(self.iter_paths())
+
+    def flag_modified(self, check=True):
         '''
         Mark files which have been modified.
 
@@ -641,9 +631,6 @@ class Selection(object):
         ''')
 
         self._conn.executemany(sql, iter_file_states())
-
-    def get_paths(self):
-        return list(self.iter_paths())
 
 
 class SquirrelStats(Object):
@@ -1754,15 +1741,9 @@ class Squirrel(Selection):
     def _redeem_promises(self, *args):
 
         tmin, tmax, _ = args
-        # f.draw_span(tmin, tmax)
-        # f.next()
 
         waveforms = list(self.iter_nuts('waveform', *args))
         promises = list(self.iter_nuts('waveform_promise', *args))
-        # f.draw(waveforms, 'red')
-        # f.draw(promises, 'gray')
-        #
-        # f.next()
 
         codes_to_avail = defaultdict(list)
         for nut in waveforms:
@@ -1837,7 +1818,6 @@ class Squirrel(Selection):
             pass
 
         def success(order):
-            # f.draw(order, 'black')
             release_order_group(order)
             split_promise(order)
 
@@ -1867,8 +1847,6 @@ class Squirrel(Selection):
                     success=success,
                     error_permanent=split_promise,
                     error_temporary=noop)
-
-        # f.next()
 
     def get_waveform_nuts(self, *args, **kwargs):
         args = self.get_selection_args(*args, **kwargs)
@@ -2462,6 +2440,35 @@ class Database(object):
                 WHERE path = ?
             ''', (path,))
 
+    def silent_touch(self, path):
+        '''
+        Update modification time of file without initiating reindexing.
+
+        Useful to prolong validity period of data with expiration date.
+        '''
+
+        c = self._conn
+        with c:
+
+            sql = 'SELECT format, size FROM files WHERE path = ?'
+            fmt, size = execute_get1(c, sql, (path,))
+
+            mod = io.get_backend(fmt)
+            mod.touch(path)
+            file_stats = mod.get_stats(path)
+
+            if file_stats[1] != size:
+                raise FileLoadError(
+                    'Silent update for file "%s" failed: size has changed.'
+                    % path)
+
+            sql = '''
+                UPDATE files
+                SET mtime = ?
+                WHERE path = ?
+            '''
+            c.execute(sql, (file_stats[0], path))
+
     def _iter_counts(self, kind=None, kind_codes_count='kind_codes_count'):
         args = []
         sel = ''
@@ -2665,8 +2672,8 @@ class Database(object):
 
 
 __all__ = [
-    'Selection',
     'Squirrel',
+    'Selection',
     'SquirrelStats',
     'Database',
     'DatabaseStats',
