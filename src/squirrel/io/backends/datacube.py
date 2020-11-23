@@ -41,8 +41,6 @@ def iload(format, file_path, segment, content):
             deltat=tr.deltat)
 
         if 'waveform' in content:
-            nut.content = model.Waveform(
-                data=tr.ydata,
-                **nut.waveform_kwargs)
+            nut.content = tr
 
         yield nut

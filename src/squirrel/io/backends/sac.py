@@ -1,6 +1,7 @@
 from __future__ import absolute_import, print_function
 
 from pyrocko.io.io_common import get_stats, touch  # noqa
+from pyrocko import trace
 from ... import model
 
 
@@ -66,8 +67,8 @@ def iload(format, file_path, segment, content):
         **agg(codes, tspan))
 
     if 'waveform' in content:
-        nut.content = model.Waveform(
-            data=s.data[0],
+        nut.content = trace.Trace(
+            ydata=s.data[0],
             **nut.waveform_kwargs)
 
     yield nut

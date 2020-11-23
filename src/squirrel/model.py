@@ -6,7 +6,8 @@ import numpy as num
 from pyrocko import util
 from pyrocko.guts import Object, String, Timestamp, Float, Int, Unicode, \
     Tuple, List
-from pyrocko.guts_array import Array
+from pyrocko.model import Content
+
 
 separator = '\t'
 
@@ -23,8 +24,7 @@ g_content_kind_ids = (
     UNDEFINED, WAVEFORM, STATION, CHANNEL, RESPONSE, EVENT,
     WAVEFORM_PROMISE) = range(len(g_content_kinds))
 
-g_tmin = int(util.str_to_time('1900-01-01 00:00:00'))
-g_tmax = int(util.str_to_time('2100-01-01 00:00:00'))
+g_tmin, g_tmax = util.get_working_system_time_range()[:2]
 
 
 def to_kind(kind_id):
@@ -154,89 +154,6 @@ def tscale_to_kscale(tscale):
     # tscale_edges[len(tscale_edges)-1] <= x: len(tscale_edges)
 
     return int(num.searchsorted(tscale_edges, tscale))
-
-
-class Content(Object):
-    '''
-    Base class for content types in the Squirrel framework.
-    '''
-
-    @property
-    def str_codes(self):
-        return '.'.join(self.codes)
-
-    @property
-    def str_time_span(self):
-        tmin, tmax = self.time_span
-        if tmin == tmax:
-            return '%s' % time_or_none_to_str(tmin)
-        else:
-            return '%s - %s' % (
-                time_or_none_to_str(tmin), time_or_none_to_str(tmax))
-
-    @property
-    def summary(self):
-        return '%s %-16s %s' % (
-            self.__class__.__name__, self.str_codes, self.str_time_span)
-
-    def __lt__(self, other):
-        return self.__key__() < other.__key__()
-
-    def __key__(self):
-        return self.codes, self.time_span_g_clipped
-
-    @property
-    def time_span_g_clipped(self):
-        tmin, tmax = self.time_span
-        return (
-            tmin if tmin is not None else g_tmin,
-            tmax if tmax is not None else g_tmax)
-
-
-class Waveform(Content):
-    '''
-    A continuous seismic waveform snippet.
-    '''
-
-    agency = String.T(default='', help='Agency code (2-5)')
-    network = String.T(default='', help='Deployment/network code (1-8)')
-    station = String.T(default='', help='Station code (1-5)')
-    location = String.T(default='', help='Location code (0-2)')
-    channel = String.T(default='', help='Channel code (3)')
-    extra = String.T(default='', help='Extra/custom code')
-
-    tmin = Timestamp.T()
-    tmax = Timestamp.T()
-
-    deltat = Float.T(optional=True)
-
-    data = Array.T(
-        optional=True,
-        shape=(None,),
-        serialize_as='base64+meta',
-        help='numpy array with data samples')
-
-    def pyrocko_trace(self):
-        from pyrocko import trace
-        return trace.Trace(
-            network=self.network,
-            station=self.station,
-            location=self.location,
-            channel=self.channel,
-            tmin=self.tmin,
-            tmax=self.tmax,
-            deltat=self.deltat,
-            ydata=self.data)
-
-    @property
-    def codes(self):
-        return (
-            self.agency, self.network, self.station, self.location,
-            self.channel, self.extra)
-
-    @property
-    def time_span(self):
-        return (self.tmin, self.tmax)
 
 
 class WaveformPromise(Content):
@@ -698,7 +615,7 @@ class Nut(Object):
         return tuple(self.codes.split(separator))
 
     @property
-    def oneline(self):
+    def summary(self):
         if self.tmin == self.tmax:
             ts = util.time_to_str(self.tmin)
         else:
@@ -843,7 +760,6 @@ __all__ = [
     'to_kind_id',
     'to_kind_ids',
     'Content',
-    'Waveform',
     'WaveformPromise',
     'Station',
     'Channel',

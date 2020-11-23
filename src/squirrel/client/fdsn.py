@@ -268,7 +268,7 @@ class FDSNSource(Source):
 
         squirrel.add(self._get_waveforms_path())
 
-    def _get_constraint_file_path(self):
+    def _get_constraint_path(self):
         return op.join(self._cache_path, self._hash, 'constraint.pickle')
 
     def _get_channels_path(self):
@@ -393,7 +393,7 @@ class FDSNSource(Source):
             return stationxml.FDSNStationXML(source='dummy-emtpy-result')
 
     def _load_constraint(self):
-        fn = self._get_constraint_file_path()
+        fn = self._get_constraint_path()
         if op.exists(fn):
             with open(fn, 'rb') as f:
                 self._constraint = pickle.load(f)
@@ -401,7 +401,7 @@ class FDSNSource(Source):
             self._constraint = None
 
     def _dump_constraint(self):
-        with open(self._get_constraint_file_path(), 'wb') as f:
+        with open(self._get_constraint_path(), 'wb') as f:
             pickle.dump(self._constraint, f, protocol=2)
 
     def _get_expiration_time(self):
@@ -409,8 +409,8 @@ class FDSNSource(Source):
             return None
 
         try:
-            file_path = self._get_channels_path()
-            t = os.stat(file_path)[8]
+            path = self._get_channels_path()
+            t = os.stat(path)[8]
             return t + self.expires
 
         except OSError:
@@ -428,12 +428,12 @@ class FDSNSource(Source):
         nuts = sub_squirrel.iter_nuts(
             'channel', constraint.tmin, constraint.tmax)
 
-        file_path = self._source_id
+        path = self._source_id
         squirrel.add_virtual(
             (make_waveform_promise_nut(
-                file_path=file_path,
+                file_path=path,
                 **nut.waveform_promise_kwargs) for nut in nuts),
-            virtual_file_paths=[file_path])
+            virtual_paths=[path])
 
     def _get_user_credentials(self):
         d = {}

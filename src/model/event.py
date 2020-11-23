@@ -366,8 +366,9 @@ class Event(Location):
         return '\n'.join(s)
 
     @property
-    def oneline(self):
-        return '%s, %s, %s, %s' % (
+    def summary(self):
+        return '%s: %s, %s, %s, %s' % (
+            self.__class__.__name__,
             self.name,
             util.time_to_str(self.time),
             '%-3s %3.1f' % (self.magnitude_type or '    ', self.magnitude)

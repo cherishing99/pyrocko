@@ -13,11 +13,12 @@ import logging
 import numpy as num
 from scipy import signal
 
-from . import util, evalresp, orthodrome, pchain, model
-from .util import reuse, hpfloat, UnavailableDecimation
-from .guts import Object, Float, Int, String, Complex, Tuple, List, \
+from pyrocko import util, evalresp, orthodrome, pchain, model
+from pyrocko.util import reuse, hpfloat, UnavailableDecimation
+from pyrocko.guts import Object, Float, Int, String, Complex, Tuple, List, \
     StringChoice, Timestamp
-from .guts_array import Array
+from pyrocko.guts_array import Array
+from pyrocko.model import Content
 
 try:
     newstr = unicode
@@ -32,7 +33,7 @@ guts_prefix = 'pf'
 logger = logging.getLogger('pyrocko.trace')
 
 
-class Trace(Object):
+class Trace(Content):
 
     '''
     Create new trace object.
@@ -64,10 +65,12 @@ class Trace(Object):
     silently truncated when the trace is stored
     '''
 
-    network = String.T(default='')
-    station = String.T(default='STA')
-    location = String.T(default='')
-    channel = String.T(default='')
+    agency = String.T(default='', help='Agency code (2-5)')
+    network = String.T(default='', help='Deployment/network code (1-8)')
+    station = String.T(default='STA', help='Station code (1-5)')
+    location = String.T(default='', help='Location code (0-2)')
+    channel = String.T(default='', help='Channel code (3)')
+    extra = String.T(default='', help='Extra/custom code')
 
     tmin = Timestamp.T(default=0.0)
     tmax = Timestamp.T()
@@ -81,9 +84,9 @@ class Trace(Object):
 
     def __init__(self, network='', station='STA', location='', channel='',
                  tmin=0., tmax=None, deltat=1., ydata=None, mtime=None,
-                 meta=None):
+                 meta=None, agency='', extra=''):
 
-        Object.__init__(self, init_props=False)
+        Content.__init__(self, init_props=False)
 
         if not isinstance(tmin, float):
             tmin = Trace.tmin.regularize_extra(tmin)
@@ -104,8 +107,10 @@ class Trace(Object):
         if mtime is None:
             mtime = time.time()
 
-        self.network, self.station, self.location, self.channel = [
-            reuse(x) for x in (network, station, location, channel)]
+        self.agency, self.network, self.station, self.location, self.channel, \
+            self.extra = [
+            reuse(x) for x in (
+                agency, network, station, location, channel, extra)]
 
         self.tmin = tmin
         self.deltat = deltat
@@ -141,14 +146,16 @@ class Trace(Object):
         return s
 
     @property
-    def oneline(self):
-        fmt = min(9, max(0, -int(math.floor(math.log10(self.deltat)))))
-        s = '%s, %s, %s, %g' % (
-            '.'.join(self.nslc_id),
-            util.time_to_str(self.tmin, format=fmt),
-            util.time_to_str(self.tmax, format=fmt),
+    def codes(self):
+        return (
+            self.agency, self.network, self.station, self.location,
+            self.channel, self.extra)
+
+    @property
+    def summary(self):
+        return '%s %-16s %s %g' % (
+            self.__class__.__name__, self.str_codes, self.str_time_span,
             self.deltat)
-        return s
 
     def __getstate__(self):
         return (self.network, self.station, self.location, self.channel,

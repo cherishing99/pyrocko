@@ -125,8 +125,7 @@ class Pile(object):
 
         if load_data:
             traces = [
-                self._squirrel.get_content(
-                    nut, 'waveform', accessor_id).pyrocko_trace()
+                self._squirrel.get_content(nut, 'waveform', accessor_id)
 
                 for nut in nuts if nut_selector is None or nut_selector(nut)]
 

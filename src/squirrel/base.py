@@ -49,43 +49,6 @@ def make_task(*args, **kwargs):
     return progress.task(*args, **kwargs)
 
 
-# TODO remove debugging stuff
-# from matplotlib import pyplot as plt
-#
-# class SFig(object):
-#     def __init__(self):
-#         self.line = 0
-#
-#     def draw(self, eles, color='black'):
-#         if not isinstance(eles, list):
-#             eles = [eles]
-#
-#         for ele in eles:
-#             plt.plot(
-#                 [ele.tmin, ele.tmax],
-#                 [self.line, self.line], color=color, alpha=0.5)
-#             plt.plot(
-#                 [ele.tmin, ele.tmax],
-#                 [self.line, self.line], 'o', color=color, alpha=0.5, ms=2)
-#
-#     def draw_span(self, tmin, tmax, color='orange'):
-#         plt.plot(
-#             [tmin, tmax],
-#             [self.line, self.line], color=color)
-#
-#     def next(self):
-#         self.line += 1
-#
-#     def show(self):
-#         plt.show()
-#
-#     def set_tspan(self, tmin, tmax):
-#         plt.xlim(tmin, tmax)
-#
-#
-# f = SFig()
-
-
 def lpick(condition, seq):
     ft = [], []
     for ele in seq:
@@ -316,7 +279,7 @@ class Selection(object):
 
         self._conn.commit()
 
-    def silent_touch(self, file_path):
+    def silent_touch(self, path):
         '''
         Update modification time of file without initiating reindexing.
 
@@ -327,53 +290,53 @@ class Selection(object):
         with c:
 
             sql = 'SELECT format, size FROM files WHERE path = ?'
-            fmt, size = execute_get1(c, sql, (file_path,))
+            fmt, size = execute_get1(c, sql, (path,))
 
             mod = io.get_backend(fmt)
-            mod.touch(file_path)
-            file_stats = mod.get_stats(file_path)
+            mod.touch(path)
+            file_stats = mod.get_stats(path)
 
             if file_stats[1] != size:
                 raise FileLoadError(
                     'Silent update for file "%s" failed: size has changed.'
-                    % file_path)
+                    % path)
 
             sql = '''
                 UPDATE files
                 SET mtime = ?
                 WHERE path = ?
             '''
-            c.execute(sql, (file_stats[0], file_path))
+            c.execute(sql, (file_stats[0], path))
 
     def add(
             self,
-            file_paths,
+            paths,
             kind_mask=model.g_kind_mask_all,
             format='detect'):
 
         '''
         Add files to the selection.
 
-        :param file_paths: Paths to files to be added to the selection.
-        :type file_paths: iterator yielding ``str`` objects
+        :param paths: Paths to files to be added to the selection.
+        :type paths: iterator yielding ``str`` objects
         '''
 
-        if isinstance(file_paths, str):
-            file_paths = [file_paths]
+        if isinstance(paths, str):
+            paths = [paths]
 
         task = make_task('Gathering file names')
-        file_paths = task(file_paths)
-        file_paths = util.short_to_list(200, file_paths)
+        paths = task(paths)
+        paths = util.short_to_list(200, paths)
 
-        if isinstance(file_paths, list) and len(file_paths) <= 200:
+        if isinstance(paths, list) and len(paths) <= 200:
 
-            # short non-iterator file_paths: can do without temp table
+            # short non-iterator paths: can do without temp table
 
             self._conn.executemany(
                 '''
                     INSERT OR IGNORE INTO files
                     VALUES (NULL, ?, NULL, NULL, NULL)
-                ''', ((x,) for x in file_paths))
+                ''', ((x,) for x in paths))
 
             task = make_task('Preparing database', 3)
             task.update(0, condition='pruning stale information')
@@ -386,7 +349,7 @@ class Selection(object):
                             WHERE files.path == ? )
                         AND kind_mask != ? OR format != ?
                 '''), (
-                    (path, kind_mask, format) for path in file_paths))
+                    (path, kind_mask, format) for path in paths))
 
             task.update(1, condition='adding file names to selection')
             self._conn.executemany(self._sql(
@@ -395,7 +358,7 @@ class Selection(object):
                     SELECT files.file_id, 0, ?, ?
                     FROM files
                     WHERE files.path = ?
-                '''), ((kind_mask, format, path) for path in file_paths))
+                '''), ((kind_mask, format, path) for path in paths))
 
             task.update(2, condition='updating file states')
             self._conn.executemany(self._sql(
@@ -407,7 +370,7 @@ class Selection(object):
                             FROM files
                             WHERE files.path == ? )
                         AND file_state != 0
-                '''), ((path,) for path in file_paths))
+                '''), ((path,) for path in paths))
 
             task.update(3)
             task.done()
@@ -422,7 +385,7 @@ class Selection(object):
 
             self._conn.executemany(self._sql(
                 'INSERT INTO temp.%(bulkinsert)s VALUES (?)'),
-                ((x,) for x in file_paths))
+                ((x,) for x in paths))
 
             task = make_task('Preparing database', 5)
             task.update(0, condition='adding file names to database')
@@ -474,15 +437,15 @@ class Selection(object):
             task.update(5)
             task.done()
 
-    def remove(self, file_paths):
+    def remove(self, paths):
         '''
         Remove files from the selection.
 
-        :param file_paths: Paths to files to be removed from the selection.
-        :type file_paths: ``list`` of ``str``
+        :param paths: Paths to files to be removed from the selection.
+        :type paths: ``list`` of ``str``
         '''
-        if isinstance(file_paths, str):
-            file_paths = [file_paths]
+        if isinstance(paths, str):
+            paths = [paths]
 
         self._conn.executemany(self._sql(
             '''
@@ -491,7 +454,7 @@ class Selection(object):
                     (SELECT files.file_id
                      FROM files
                      WHERE files.path == ?)
-            '''), ((path,) for path in file_paths))
+            '''), ((path,) for path in paths))
 
     def _set_file_states_known(self):
         '''
@@ -1042,7 +1005,7 @@ class Squirrel(Selection):
                 m[table_name] % self._names, stream=stream)
 
     def add(self,
-            file_paths,
+            paths,
             kinds=None,
             format='detect',
             check=True,
@@ -1051,7 +1014,7 @@ class Squirrel(Selection):
         '''
         Add files to the selection.
 
-        :param file_paths: iterator yielding paths to files or directories to
+        :param paths: iterator yielding paths to files or directories to
             be added to the selection. Recurses into directories given. If
             given a `str`, it is treated as a single path to be added.
         :param kinds: if given, allowed content types to be made available
@@ -1067,15 +1030,15 @@ class Squirrel(Selection):
         if isinstance(kinds, str):
             kinds = (kinds,)
 
-        if isinstance(file_paths, str):
-            file_paths = [file_paths]
+        if isinstance(paths, str):
+            paths = [paths]
 
         kind_mask = model.to_kind_mask(kinds)
 
         with progress.view(progress_viewer):
             Selection.add(
                 self, util.iter_select_files(
-                    file_paths,
+                    paths,
                     show_progress=False,
                     pass_through=lambda path: path.startswith('virtual:')
                 ), kind_mask, format)
@@ -1088,29 +1051,29 @@ class Squirrel(Selection):
         self._load(check=True)
         self._update_nuts()
 
-    def add_virtual(self, nuts, virtual_file_paths=None):
+    def add_virtual(self, nuts, virtual_paths=None):
         '''
         Add content which is not backed by files.
 
         Stores to the main database and the selection.
 
-        If ``virtual_file_paths`` are given, this prevents creating a temp list
+        If ``virtual_paths`` are given, this prevents creating a temp list
         of the nuts while aggregating the file paths for the selection.
         '''
 
-        if isinstance(virtual_file_paths, str):
-            virtual_file_paths = [virtual_file_paths]
+        if isinstance(virtual_paths, str):
+            virtual_paths = [virtual_paths]
 
-        if virtual_file_paths is None:
+        if virtual_paths is None:
             nuts_add = []
-            virtual_file_paths = set()
+            virtual_paths = set()
             for nut in nuts:
-                virtual_file_paths.add(nut.file_path)
+                virtual_paths.add(nut.file_path)
                 nuts_add.append(nut)
         else:
             nuts_add = nuts
 
-        Selection.add(self, virtual_file_paths)
+        Selection.add(self, virtual_paths)
         self.get_database().dig(nuts_add)
         self._update_nuts()
 
@@ -1351,7 +1314,7 @@ class Squirrel(Selection):
         return list(self.iter_nuts(*args, **kwargs))
 
     def split_nuts(
-            self, kind, tmin=None, tmax=None, codes=None, file_path=None):
+            self, kind, tmin=None, tmax=None, codes=None, path=None):
 
         tmin_seconds, tmin_offset = model.tsplit(tmin)
         tmax_seconds, tmax_offset = model.tsplit(tmax)
@@ -1392,9 +1355,9 @@ class Squirrel(Selection):
                         ('kind_codes.codes GLOB ?',) * len(pats)))
                 args.extend(separator.join(pat) for pat in pats)
 
-        if file_path is not None:
+        if path is not None:
             extra_cond.append('files.path == ?')
-            args.append(file_path)
+            args.append(path)
 
         sql = self._sql('''
             SELECT
@@ -1831,9 +1794,6 @@ class Squirrel(Selection):
                         gaps=gaps(waveforms_avail, block_tmin, block_tmax)))
 
         orders_noop, orders = lpick(lambda order: order.gaps, orders)
-        # f.draw(orders_noop, 'green')
-        # f.draw(orders, 'blue')
-        # f.next()
 
         order_keys_noop = set(order_key(order) for order in orders_noop)
         if len(order_keys_noop) != 0 or len(orders_noop) != 0:
@@ -1871,7 +1831,7 @@ class Squirrel(Selection):
                 'waveform_promise',
                 order.tmin, order.tmax,
                 codes=order.codes,
-                file_path=order.source_id)
+                path=order.source_id)
 
         def noop(order):
             pass
@@ -2225,7 +2185,7 @@ class Database(object):
 
             c.execute(
                 '''
-                    CREATE UNIQUE INDEX IF NOT EXISTS index_files_file_path
+                    CREATE UNIQUE INDEX IF NOT EXISTS index_files_path
                     ON files (path)
                 ''')
 
@@ -2450,18 +2410,18 @@ class Database(object):
         if path is not None:
             yield path, nuts
 
-    def undig_many(self, file_paths):
-        selection = self.new_selection(file_paths)
+    def undig_many(self, paths):
+        selection = self.new_selection(paths)
 
         for (_, path), nuts in selection.undig_grouped():
             yield path, nuts
 
         del selection
 
-    def new_selection(self, file_paths=None):
+    def new_selection(self, paths=None):
         selection = Selection(self)
-        if file_paths:
-            selection.add(file_paths)
+        if paths:
+            selection.add(paths)
         return selection
 
     def commit(self):
