@@ -5,7 +5,7 @@
 
 from __future__ import absolute_import, print_function
 
-from pyrocko import io, config
+from pyrocko import io
 from pyrocko.apps.jackseis import process, tfmt
 
 from .. import common
