@@ -185,7 +185,7 @@ def process(get_pile, options):
 
     old = signal.signal(signal.SIGINT, got_sigint)
 
-    for traces in it:
+    def process_traces(traces):
         if traces:
             twmin = min(tr.wmin for tr in traces)
             twmax = max(tr.wmax for tr in traces)
@@ -243,7 +243,18 @@ def process(get_pile, options):
                     die(str(e))
 
         if abort:
-            break
+            return
+
+    try:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=int(options.nthreads)) as executor:
+            executor.map(process_traces, it, chunksize=1)
+
+    except ImportError:
+
+        for traces in it:
+            process_traces(traces)
 
     signal.signal(signal.SIGINT, old)
 
@@ -432,6 +443,13 @@ def main(args=None):
         help='set data type. Choices: same [default], int32, '
              'int64, float32, float64. The output file format must support '
              'the given type.')
+
+    parser.add_option(
+        '--nthreads',
+        metavar='NTHREADS',
+        default=1,
+        help='number of threads for processing, '
+             'this can speed-up CPU bound tasks')
 
     (options, args) = parser.parse_args(args)
 
