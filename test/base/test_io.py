@@ -23,6 +23,14 @@ def rn(n):
     return ''.join([random.choice(abc) for i in range(n)])
 
 
+def has_nptdms():
+    try:
+        import nptdms  # noqa
+        return True
+    except ImportError:
+        return False
+
+
 class IOTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -232,6 +240,14 @@ class IOTestCase(unittest.TestCase):
         s = sx.dump_xml(ns_ignore=True)
         sx2 = guts.load_xml(string=s)
         assert sx.dump_xml() == sx2.dump_xml()
+
+    @unittest.skipIf(not has_nptdms(), 'nptdms not installed')
+    def testReadTDMSiDAS(self):
+        fpath = common.test_data_file('test_idas.tdms')
+        traces = io.load(fpath, 'tdms_idas')
+
+        assert len(traces)
+        assert traces[0].deltat == 1./1000
 
 
 if __name__ == "__main__":
