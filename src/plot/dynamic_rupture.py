@@ -1569,7 +1569,11 @@ class RuptureView(Object):
         :type dpi: int
         '''
         self.finalize()
-        self._fig.savefig(fname=filename, dpi=dpi, bbox_inches='tight')
+        try:
+            self._fig.savefig(fname=filename, dpi=dpi, bbox_inches='tight')
+        except TypeError:
+            self._fig.savefig(filename=filename, dpi=dpi, bbox_inches='tight')
+
         self._clear_all()
 
     def show_plot(self):
